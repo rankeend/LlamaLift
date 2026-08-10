@@ -1,0 +1,29 @@
+# Local configuration and runtime data
+data/
+logs/
+*.log
+*.bak
+*.tmp
+
+# Build and test outputs
+dist/
+dist-installer/
+release/
+test-output/
+*.zip
+*.exe
+*.pdb
+
+# Local/legacy files that are not part of the v0.1 repository baseline
+MainForm.cs
+部署说明.txt
+
+# Keep only the .NET Framework 4.8 AntdUI runtime required by build.ps1.
+packages/*
+!packages/AntdUI.2.4.4/
+packages/AntdUI.2.4.4/*
+!packages/AntdUI.2.4.4/lib/
+packages/AntdUI.2.4.4/lib/*
+!packages/AntdUI.2.4.4/lib/net48/
+packages/AntdUI.2.4.4/lib/net48/*
+!packages/AntdUI.2.4.4/lib/net48/AntdUI.dll

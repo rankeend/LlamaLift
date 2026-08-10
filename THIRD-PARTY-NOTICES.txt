@@ -1,0 +1,22 @@
+Llama Server Manager v0.1.0-internal - Third-Party Notices
+==========================================================
+
+AntdUI
+------
+Project: https://github.com/AntdUI/AntdUI
+Copyright: AntdUI contributors
+License: Apache License 2.0
+
+This product includes AntdUI.dll, used to provide modern Windows Forms controls,
+high-DPI rendering, and light/dark theme support.
+
+Apache License 2.0: https://www.apache.org/licenses/LICENSE-2.0
+
+Inno Setup
+----------
+Project: https://github.com/jrsoftware/issrc
+Copyright: Jordan Russell and contributors
+License: Inno Setup License
+
+Inno Setup is used only to create the Windows installer. Its compiler/runtime is
+not bundled as a general-purpose component of this application.
