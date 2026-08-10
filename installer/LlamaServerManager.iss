@@ -1,5 +1,5 @@
 #define MyAppName "Llama Server Manager"
-#define MyAppVersion "0.1.0"
+#define MyAppVersion "0.2.0"
 #define MyAppPublisher "Llama Server Manager Community"
 #define MyAppExeName "LlamaServerManager.exe"
 
@@ -12,7 +12,7 @@ DefaultDirName={autopf}\Llama Server Manager
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=..\release
-OutputBaseFilename=LlamaServerManager-v0.1.0-internal-Setup
+OutputBaseFilename=LlamaServerManager-v0.2.0-dev-Setup
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
@@ -20,6 +20,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=admin
 UninstallDisplayIcon={app}\{#MyAppExeName}
+SetupIconFile=..\assets\LlamaServerManager-llama-icon-v2.ico
 VersionInfoVersion={#MyAppVersion}
 VersionInfoProductName={#MyAppName}
 VersionInfoDescription=Windows llama.cpp service manager and launcher

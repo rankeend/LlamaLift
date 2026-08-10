@@ -66,6 +66,9 @@ namespace LlamaServerManager
         private AInputNumber numPort;
         private AInputNumber numContext;
         private AInputNumber numParallel;
+        private AInputNumber numThreads;
+        private AInputNumber numBatch;
+        private AInputNumber numUbatch;
         private AInput txtGpuLayers;
         private AInputNumber numFitTarget;
         private AInputNumber numImageTokens;
@@ -80,6 +83,18 @@ namespace LlamaServerManager
         private ASwitch swMlock;
         private AInput txtExtraArgs;
         private AInput txtCommand;
+        private ASelect cmbTuningPreset;
+        private AButton btnAutoTune;
+
+        private ASelect cmbRuntimeAsset;
+        private ASelect cmbInstalledRuntime;
+        private AButton btnRefreshRuntimes;
+        private AButton btnInstallRuntime;
+        private AButton btnUseRuntime;
+        private Label lblHardwareSummary;
+        private Label lblRuntimeStatus;
+        private ProgressBar runtimeProgress;
+        private HardwareProfile detectedHardware;
 
         private AButton btnStart;
         private AButton btnStop;
@@ -117,6 +132,7 @@ namespace LlamaServerManager
         private void InitializeWindow()
         {
             Text = "Llama Server Manager " + AppVersion.DisplayVersion;
+            try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
             StartPosition = FormStartPosition.CenterScreen;
             MinimumSize = new Size(940, 600);
             Size = new Size(1320, 840);
@@ -176,6 +192,7 @@ namespace LlamaServerManager
 
             AddPage("dashboard", BuildDashboardPage());
             AddPage("profiles", BuildProfilesPage());
+            AddPage("runtimes", BuildRuntimeManagerPage());
             AddPage("logs", BuildLogsPage());
             AddPage("settings", BuildSettingsPage());
             Navigate("dashboard");
@@ -192,8 +209,9 @@ namespace LlamaServerManager
             TableLayoutPanel layout = new TableLayoutPanel();
             layout.Dock = DockStyle.Fill;
             layout.ColumnCount = 1;
-            layout.RowCount = 7;
+            layout.RowCount = 8;
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 98F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48F));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48F));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48F));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48F));
@@ -217,8 +235,9 @@ namespace LlamaServerManager
 
             layout.Controls.Add(MakeNavButton("dashboard", "总览", "▦"), 0, 1);
             layout.Controls.Add(MakeNavButton("profiles", "模型配置", "◫"), 0, 2);
-            layout.Controls.Add(MakeNavButton("logs", "运行日志", "≡"), 0, 3);
-            layout.Controls.Add(MakeNavButton("settings", "外观与设置", "⚙"), 0, 4);
+            layout.Controls.Add(MakeNavButton("runtimes", "运行环境", "↓"), 0, 3);
+            layout.Controls.Add(MakeNavButton("logs", "运行日志", "≡"), 0, 4);
+            layout.Controls.Add(MakeNavButton("settings", "外观与设置", "⚙"), 0, 5);
 
             System.Windows.Forms.Panel footer = new System.Windows.Forms.Panel();
             footer.Dock = DockStyle.Fill;
@@ -231,7 +250,7 @@ namespace LlamaServerManager
             mode.AutoSize = true;
             footer.Controls.Add(machine);
             footer.Controls.Add(mode);
-            layout.Controls.Add(footer, 0, 6);
+            layout.Controls.Add(footer, 0, 7);
             return panel;
         }
 
@@ -434,12 +453,12 @@ namespace LlamaServerManager
             TableLayoutPanel columns = new TableLayoutPanel();
             columns.Dock = DockStyle.Top;
             columns.AutoSize = false;
-            columns.Height = 470;
+            columns.Height = 590;
             columns.ColumnCount = 2;
             columns.RowCount = 1;
             columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
             columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
-            columns.RowStyles.Add(new RowStyle(SizeType.Absolute, 470F));
+            columns.RowStyles.Add(new RowStyle(SizeType.Absolute, 590F));
             profileColumns = columns;
             profileFilesCard = BuildFilesCard();
             profileRuntimeCard = BuildRuntimeCard();
@@ -477,7 +496,7 @@ namespace LlamaServerManager
             float scale = Math.Max(1F, sidebar == null ? Font.Height / 15F : sidebar.Width / 224F);
             int availableWidth = Math.Max(0, ClientSize.Width - (sidebar == null ? 0 : sidebar.Width) - Convert.ToInt32(70F * scale));
             bool stack = availableWidth < Convert.ToInt32(950F * scale);
-            int cardHeight = Convert.ToInt32(470F * scale);
+            int cardHeight = Convert.ToInt32(590F * scale);
 
             profileColumns.SuspendLayout();
             profilePage.SuspendLayout();
@@ -530,7 +549,7 @@ namespace LlamaServerManager
             table.Dock = DockStyle.Fill;
             table.AutoSize = true;
             table.ColumnCount = 3;
-            table.RowCount = 8;
+            table.RowCount = 11;
             table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 92F));
             table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
             table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 42F));
@@ -573,35 +592,60 @@ namespace LlamaServerManager
             table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90F));
             table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
             table.RowStyles.Add(new RowStyle(SizeType.Absolute, 34F));
-            for (int i = 1; i < 8; i++) table.RowStyles.Add(new RowStyle(SizeType.Absolute, 48F));
-            table.RowStyles[6].Height = 82F;
+            for (int i = 1; i < 11; i++) table.RowStyles.Add(new RowStyle(SizeType.Absolute, 48F));
+            table.RowStyles[9].Height = 82F;
 
             Label title = MakeLabel("运行参数", 11F, FontStyle.Bold);
             title.Dock = DockStyle.Fill;
             table.Controls.Add(title, 0, 0);
             table.SetColumnSpan(title, 4);
 
+            cmbTuningPreset = MakeSelect(160);
+            cmbTuningPreset.Items.AddRange(new object[] { "快速", "均衡", "极限" });
+            Label tuningLabel = MakeMutedLabel("自适应", 8.5F);
+            tuningLabel.Dock = DockStyle.Fill;
+            tuningLabel.TextAlign = ContentAlignment.MiddleLeft;
+            table.Controls.Add(tuningLabel, 0, 1);
+            cmbTuningPreset.Dock = DockStyle.Fill;
+            table.Controls.Add(cmbTuningPreset, 1, 1);
+            btnAutoTune = MakeButton("检测并生成方案", 170, AntdUI.TTypeMini.Primary, AutoTuneClicked);
+            btnAutoTune.Dock = DockStyle.Fill;
+            btnAutoTune.Margin = new Padding(6, 7, 0, 7);
+            table.Controls.Add(btnAutoTune, 2, 1);
+            table.SetColumnSpan(btnAutoTune, 2);
+            WireSettingControl(cmbTuningPreset);
+            configurationControls.Add(cmbTuningPreset);
+
             txtHost = MakeInput("127.0.0.1 或 0.0.0.0");
             txtAdvertisedHost = MakeInput("客户端访问的 IP/主机名");
-            AddPair(table, 1, "监听地址", txtHost, "公开地址", txtAdvertisedHost);
+            AddPair(table, 2, "监听地址", txtHost, "公开地址", txtAdvertisedHost);
 
             numPort = MakeNumber(1, 65535, 8080);
             numContext = MakeNumber(0, 1048576, 8192);
-            AddPair(table, 2, "端口", numPort, "上下文", numContext);
+            AddPair(table, 3, "端口", numPort, "上下文", numContext);
 
             numParallel = MakeNumber(1, 128, 1);
             txtGpuLayers = MakeInput("auto、-1 或层数");
-            AddPair(table, 3, "并发数", numParallel, "GPU 层", txtGpuLayers);
+            AddPair(table, 4, "并发数", numParallel, "GPU 层", txtGpuLayers);
 
             cmbCacheK = MakeSelect(160);
             AddCacheOptions(cmbCacheK);
             cmbCacheV = MakeSelect(160);
             AddCacheOptions(cmbCacheV);
-            AddPair(table, 4, "KV Cache K", cmbCacheK, "KV Cache V", cmbCacheV);
+            AddPair(table, 5, "KV Cache K", cmbCacheK, "KV Cache V", cmbCacheV);
 
             numFitTarget = MakeNumber(0, 1048576, 1024);
             numImageTokens = MakeNumber(0, 1048576, 0);
-            AddPair(table, 5, "Fit 余量 MB", numFitTarget, "图片 tokens", numImageTokens);
+            AddPair(table, 6, "Fit 余量 MB", numFitTarget, "图片 tokens", numImageTokens);
+
+            numThreads = MakeNumber(0, 512, 0);
+            numBatch = MakeNumber(1, 65536, 2048);
+            AddPair(table, 7, "CPU 线程", numThreads, "Batch", numBatch);
+
+            numUbatch = MakeNumber(1, 65536, 512);
+            cmbReasoning = MakeSelect(150);
+            cmbReasoning.Items.AddRange(new object[] { "默认", "none", "auto", "deepseek", "deepseek-legacy" });
+            AddPair(table, 8, "Ubatch", numUbatch, "推理解析", cmbReasoning);
 
             FlowLayoutPanel switches = new FlowLayoutPanel();
             switches.Dock = DockStyle.Fill;
@@ -620,16 +664,142 @@ namespace LlamaServerManager
             switches.Controls.Add(MakeSwitchItem("No mmap", swNoMmap));
             switches.Controls.Add(MakeSwitchItem("Mlock", swMlock));
             configurationControls.AddRange(new Control[] { swFit, swFlash, swJinja, swNoWebUi, swNoMmap, swMlock });
-            table.Controls.Add(switches, 0, 6);
+            table.Controls.Add(switches, 0, 9);
             table.SetColumnSpan(switches, 4);
 
-            cmbReasoning = MakeSelect(150);
-            cmbReasoning.Items.AddRange(new object[] { "默认", "none", "auto", "deepseek", "deepseek-legacy" });
             txtExtraArgs = MakeInput("其余 llama-server 参数（高级）");
-            AddPair(table, 7, "推理解析", cmbReasoning, "自定义参数", txtExtraArgs);
+            Label extraLabel = MakeMutedLabel("自定义参数", 8.5F);
+            extraLabel.Dock = DockStyle.Fill;
+            extraLabel.TextAlign = ContentAlignment.MiddleLeft;
+            table.Controls.Add(extraLabel, 0, 10);
+            table.Controls.Add(txtExtraArgs, 1, 10);
+            table.SetColumnSpan(txtExtraArgs, 3);
+            WireSettingControl(txtExtraArgs);
+            configurationControls.Add(txtExtraArgs);
 
             card.Controls.Add(table);
             return card;
+        }
+
+        private Control BuildRuntimeManagerPage()
+        {
+            TableLayoutPanel page = NewPage();
+            page.Padding = new Padding(22);
+            page.RowCount = 3;
+            page.RowStyles.Add(new RowStyle(SizeType.Absolute, 162F));
+            page.RowStyles.Add(new RowStyle(SizeType.Absolute, 260F));
+            page.RowStyles.Add(new RowStyle(SizeType.Absolute, 210F));
+            page.AutoScrollMinSize = new Size(720, 676);
+
+            APanel hardwareCard = NewCard();
+            hardwareCard.Margin = new Padding(0, 0, 0, 14);
+            hardwareCard.Padding = new Padding(20, 16, 20, 16);
+            TableLayoutPanel hardwareLayout = new TableLayoutPanel();
+            hardwareLayout.Dock = DockStyle.Fill;
+            hardwareLayout.ColumnCount = 2;
+            hardwareLayout.RowCount = 2;
+            hardwareLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            hardwareLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150F));
+            hardwareLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38F));
+            hardwareLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            Label hardwareTitle = MakeLabel("本机运行能力", 14F, FontStyle.Bold);
+            hardwareTitle.Dock = DockStyle.Fill;
+            hardwareLayout.Controls.Add(hardwareTitle, 0, 0);
+            btnRefreshRuntimes = MakeButton("检测并刷新版本", 142, AntdUI.TTypeMini.Primary, RefreshRuntimesClicked);
+            btnRefreshRuntimes.Dock = DockStyle.Fill;
+            hardwareLayout.Controls.Add(btnRefreshRuntimes, 1, 0);
+            lblHardwareSummary = MakeMutedLabel("尚未检测。点击右上角后，软件会识别 CPU、内存、GPU，并从 llama.cpp 官方仓库读取可用版本。", 9F);
+            lblHardwareSummary.Dock = DockStyle.Fill;
+            lblHardwareSummary.AutoSize = false;
+            lblHardwareSummary.TextAlign = ContentAlignment.MiddleLeft;
+            hardwareLayout.Controls.Add(lblHardwareSummary, 0, 1);
+            hardwareLayout.SetColumnSpan(lblHardwareSummary, 2);
+            hardwareCard.Controls.Add(hardwareLayout);
+            page.Controls.Add(hardwareCard, 0, 0);
+
+            APanel releasesCard = NewCard();
+            releasesCard.Margin = new Padding(0, 0, 0, 14);
+            releasesCard.Padding = new Padding(20, 14, 20, 16);
+            TableLayoutPanel releasesLayout = new TableLayoutPanel();
+            releasesLayout.Dock = DockStyle.Fill;
+            releasesLayout.ColumnCount = 2;
+            releasesLayout.RowCount = 5;
+            releasesLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            releasesLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150F));
+            releasesLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36F));
+            releasesLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48F));
+            releasesLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38F));
+            releasesLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32F));
+            releasesLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            Label releasesTitle = MakeLabel("llama.cpp 官方 Windows 运行时", 13F, FontStyle.Bold);
+            releasesTitle.Dock = DockStyle.Fill;
+            releasesLayout.Controls.Add(releasesTitle, 0, 0);
+            releasesLayout.SetColumnSpan(releasesTitle, 2);
+            cmbRuntimeAsset = MakeSelect(520);
+            cmbRuntimeAsset.Dock = DockStyle.Fill;
+            releasesLayout.Controls.Add(cmbRuntimeAsset, 0, 1);
+            btnInstallRuntime = MakeButton("下载并安装", 138, AntdUI.TTypeMini.Primary, InstallRuntimeClicked);
+            btnInstallRuntime.Dock = DockStyle.Fill;
+            btnInstallRuntime.Enabled = false;
+            releasesLayout.Controls.Add(btnInstallRuntime, 1, 1);
+            Label releasesNote = MakeMutedLabel("仅使用 ggml-org/llama.cpp 官方 Release；CUDA 构建会自动合并同版本 cudart 包。官方提供摘要时会强制校验 SHA-256。", 8.5F);
+            releasesNote.Dock = DockStyle.Fill;
+            releasesNote.AutoSize = false;
+            releasesNote.TextAlign = ContentAlignment.MiddleLeft;
+            releasesLayout.Controls.Add(releasesNote, 0, 2);
+            releasesLayout.SetColumnSpan(releasesNote, 2);
+            runtimeProgress = new ProgressBar();
+            runtimeProgress.Dock = DockStyle.Fill;
+            runtimeProgress.Minimum = 0;
+            runtimeProgress.Maximum = 100;
+            runtimeProgress.Style = ProgressBarStyle.Continuous;
+            runtimeProgress.Margin = new Padding(2, 8, 2, 8);
+            releasesLayout.Controls.Add(runtimeProgress, 0, 3);
+            releasesLayout.SetColumnSpan(runtimeProgress, 2);
+            lblRuntimeStatus = MakeMutedLabel("等待刷新官方版本。", 8.75F);
+            lblRuntimeStatus.Dock = DockStyle.Fill;
+            lblRuntimeStatus.AutoSize = false;
+            lblRuntimeStatus.TextAlign = ContentAlignment.MiddleLeft;
+            releasesLayout.Controls.Add(lblRuntimeStatus, 0, 4);
+            releasesLayout.SetColumnSpan(lblRuntimeStatus, 2);
+            releasesCard.Controls.Add(releasesLayout);
+            page.Controls.Add(releasesCard, 0, 1);
+
+            APanel installedCard = NewCard();
+            installedCard.Padding = new Padding(20, 14, 20, 16);
+            TableLayoutPanel installedLayout = new TableLayoutPanel();
+            installedLayout.Dock = DockStyle.Fill;
+            installedLayout.ColumnCount = 3;
+            installedLayout.RowCount = 3;
+            installedLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            installedLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 142F));
+            installedLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120F));
+            installedLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38F));
+            installedLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 50F));
+            installedLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            Label installedTitle = MakeLabel("已安装运行时", 13F, FontStyle.Bold);
+            installedTitle.Dock = DockStyle.Fill;
+            installedLayout.Controls.Add(installedTitle, 0, 0);
+            installedLayout.SetColumnSpan(installedTitle, 3);
+            cmbInstalledRuntime = MakeSelect(480);
+            cmbInstalledRuntime.Dock = DockStyle.Fill;
+            installedLayout.Controls.Add(cmbInstalledRuntime, 0, 1);
+            btnUseRuntime = MakeButton("用于当前配置", 134, AntdUI.TTypeMini.Primary, UseRuntimeClicked);
+            btnUseRuntime.Dock = DockStyle.Fill;
+            installedLayout.Controls.Add(btnUseRuntime, 1, 1);
+            AButton openRuntime = MakeButton("打开目录", 112, AntdUI.TTypeMini.Default, OpenRuntimeDirectoryClicked);
+            openRuntime.Dock = DockStyle.Fill;
+            installedLayout.Controls.Add(openRuntime, 2, 1);
+            Label installedNote = MakeMutedLabel("运行时保存在应用数据目录，可安装多个版本并为不同模型配置分别切换；模型文件仍由用户自行选择。", 8.75F);
+            installedNote.Dock = DockStyle.Fill;
+            installedNote.AutoSize = false;
+            installedNote.TextAlign = ContentAlignment.MiddleLeft;
+            installedLayout.Controls.Add(installedNote, 0, 2);
+            installedLayout.SetColumnSpan(installedNote, 3);
+            installedCard.Controls.Add(installedLayout);
+            page.Controls.Add(installedCard, 0, 2);
+            RefreshInstalledRuntimeOptions();
+            return page;
         }
 
         private Control BuildLogsPage()
@@ -741,7 +911,7 @@ namespace LlamaServerManager
             Label aboutTitle = MakeLabel("Llama Server Manager  " + AppVersion.DisplayVersion, 14F, FontStyle.Bold);
             aboutTitle.Dock = DockStyle.Fill;
             aboutTitle.TextAlign = ContentAlignment.MiddleLeft;
-            Label aboutBody = MakeMutedLabel("通用 Windows llama.cpp 服务管理器。软件不捆绑 llama.cpp、模型或 CUDA；请在模型配置中选择您自己的 llama-server.exe 与 GGUF 文件。\n界面基于 AntdUI（Apache-2.0）；安装包由 Inno Setup 构建。", 9.5F);
+            Label aboutBody = MakeMutedLabel("通用 Windows llama.cpp 服务管理器。可从 ggml-org/llama.cpp 官方 Release 安装运行时，也支持手工选择已有 llama-server.exe。软件不捆绑模型文件或用户密钥。\n界面基于 AntdUI（Apache-2.0）；安装包由 Inno Setup 构建。", 9.5F);
             aboutBody.Dock = DockStyle.Fill;
             aboutBody.AutoSize = false;
             aboutBody.TextAlign = ContentAlignment.TopLeft;
@@ -797,6 +967,11 @@ namespace LlamaServerManager
             {
                 lblHeaderTitle.Text = "模型配置";
                 lblHeaderSubtitle.Text = "配置任意 Windows llama.cpp 后端、模型和启动参数";
+            }
+            else if (key == "runtimes")
+            {
+                lblHeaderTitle.Text = "运行环境";
+                lblHeaderSubtitle.Text = "检测硬件，从官方 Release 安装和切换 llama.cpp";
             }
             else if (key == "logs")
             {
@@ -1051,6 +1226,7 @@ namespace LlamaServerManager
             bindingProfiles = false;
             if (config.Profiles.Count > 0) currentProfile = config.Profiles[selected];
             if (currentProfile != null) LoadProfileToControls(currentProfile);
+            RefreshInstalledRuntimeOptions();
         }
 
         private void ProfileSelectedIndexChanged(object sender, EventArgs e)
@@ -1100,6 +1276,9 @@ namespace LlamaServerManager
                 SetNumber(numPort, profile.Port);
                 SetNumber(numContext, profile.ContextSize);
                 SetNumber(numParallel, profile.Parallel);
+                SetNumber(numThreads, profile.Threads);
+                SetNumber(numBatch, profile.BatchSize);
+                SetNumber(numUbatch, profile.UbatchSize);
                 txtGpuLayers.Text = profile.GpuLayers;
                 swFit.Checked = profile.FitEnabled;
                 SetNumber(numFitTarget, profile.FitTarget);
@@ -1113,6 +1292,7 @@ namespace LlamaServerManager
                 swMlock.Checked = profile.Mlock;
                 SelectValue(cmbReasoning, string.IsNullOrWhiteSpace(profile.Reasoning) ? "默认" : profile.Reasoning, "默认");
                 txtExtraArgs.Text = profile.ExtraArguments;
+                SelectValue(cmbTuningPreset, AdaptiveTuner.DisplayPreset(profile.TuningPreset), "均衡");
             }
             finally { loadingControls = false; }
             UpdateDashboardSummary();
@@ -1133,6 +1313,9 @@ namespace LlamaServerManager
             currentProfile.Port = Decimal.ToInt32(numPort.Value);
             currentProfile.ContextSize = Decimal.ToInt32(numContext.Value);
             currentProfile.Parallel = Decimal.ToInt32(numParallel.Value);
+            currentProfile.Threads = Decimal.ToInt32(numThreads.Value);
+            currentProfile.BatchSize = Decimal.ToInt32(numBatch.Value);
+            currentProfile.UbatchSize = Decimal.ToInt32(numUbatch.Value);
             currentProfile.GpuLayers = string.IsNullOrWhiteSpace(txtGpuLayers.Text) ? "auto" : txtGpuLayers.Text.Trim();
             currentProfile.FitEnabled = swFit.Checked;
             currentProfile.FitTarget = Decimal.ToInt32(numFitTarget.Value);
@@ -1147,6 +1330,8 @@ namespace LlamaServerManager
             string reasoning = SelectText(cmbReasoning, "默认");
             currentProfile.Reasoning = reasoning == "默认" ? string.Empty : reasoning;
             currentProfile.ExtraArguments = txtExtraArgs.Text.Trim();
+            string preset = SelectText(cmbTuningPreset, "均衡");
+            currentProfile.TuningPreset = preset == "快速" ? "Fast" : (preset == "极限" ? "Extreme" : "Balanced");
         }
 
         private void SaveProfileClicked(object sender, EventArgs e)
@@ -1200,6 +1385,195 @@ namespace LlamaServerManager
             config.SelectedProfileId = config.Profiles[0].Id;
             ConfigStore.Save(config);
             BindProfiles();
+        }
+
+        private async void AutoTuneClicked(object sender, EventArgs e)
+        {
+            if (currentProfile == null || processManager.IsRunning) return;
+            UpdateProfileFromControls();
+            if (string.IsNullOrWhiteSpace(currentProfile.ModelPath) || !File.Exists(currentProfile.ModelPath))
+            {
+                MessageBox.Show(this, "请先选择一个本地 GGUF 模型，再运行参数自适应。", "缺少模型", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            btnAutoTune.Loading = true;
+            try
+            {
+                if (detectedHardware == null)
+                    detectedHardware = await Task.Factory.StartNew<HardwareProfile>(delegate { return HardwareDetector.Detect(); });
+                string modelPath = currentProfile.ModelPath;
+                GgufModelInfo model = await Task.Factory.StartNew<GgufModelInfo>(delegate { return GgufMetadataReader.Read(modelPath); });
+                string selectedPreset = SelectText(cmbTuningPreset, "均衡");
+                AdaptivePlan plan = AdaptiveTuner.Recommend(detectedHardware, model, selectedPreset);
+                string message = plan.Summary;
+                if (plan.Warnings.Count > 0)
+                    message += "\n\n注意：\n- " + string.Join("\n- ", plan.Warnings.ToArray());
+                message += "\n\n是否将这组参数应用到当前模型配置？";
+                DialogResult answer = MessageBox.Show(this, message, "参数自适应方案 · " + AdaptiveTuner.DisplayPreset(plan.Preset), MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+                if (answer != DialogResult.Yes) return;
+
+                plan.ApplyTo(currentProfile);
+                ConfigStore.Save(config);
+                LoadProfileToControls(currentProfile);
+                AppendLog("已应用参数自适应方案：" + AdaptiveTuner.DisplayPreset(plan.Preset) + "；上下文 " + plan.ContextSize + "；KV " + plan.CacheTypeK + "/" + plan.CacheTypeV, false);
+            }
+            catch (Exception ex)
+            {
+                AppendLog("参数自适应失败：" + ex.Message, true);
+                MessageBox.Show(this, ex.Message, "参数自适应失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally { btnAutoTune.Loading = false; }
+        }
+
+        private async void RefreshRuntimesClicked(object sender, EventArgs e)
+        {
+            if (btnRefreshRuntimes == null) return;
+            btnRefreshRuntimes.Loading = true;
+            btnInstallRuntime.Enabled = false;
+            runtimeProgress.Value = 0;
+            lblRuntimeStatus.Text = "正在检测本机硬件……";
+            try
+            {
+                detectedHardware = await Task.Factory.StartNew<HardwareProfile>(delegate { return HardwareDetector.Detect(); });
+                lblHardwareSummary.Text = detectedHardware.Summary;
+                lblRuntimeStatus.Text = "正在读取 ggml-org/llama.cpp 官方 Release……";
+                List<LlamaReleaseAsset> assets = await LlamaReleaseClient.GetWindowsAssetsAsync();
+                cmbRuntimeAsset.Items.Clear();
+                foreach (LlamaReleaseAsset asset in assets) cmbRuntimeAsset.Items.Add(asset);
+                if (assets.Count == 0)
+                {
+                    lblRuntimeStatus.Text = "官方 Release 中没有识别到 Windows x64 运行时。可稍后重试或继续手工选择 llama-server.exe。";
+                    return;
+                }
+
+                int selected = 0;
+                string newestTag = assets[0].ReleaseTag;
+                for (int i = 0; i < assets.Count; i++)
+                {
+                    if (assets[i].ReleaseTag == newestTag && string.Equals(assets[i].Backend, detectedHardware.RecommendedBackend, StringComparison.OrdinalIgnoreCase))
+                    {
+                        selected = i;
+                        break;
+                    }
+                }
+                cmbRuntimeAsset.SelectedIndex = selected;
+                btnInstallRuntime.Enabled = true;
+                lblRuntimeStatus.Text = "已读取 " + assets.Count + " 个 Windows x64 构建；已按本机硬件优先选择 " + assets[selected].Backend + "。";
+                runtimeProgress.Value = 100;
+            }
+            catch (Exception ex)
+            {
+                lblRuntimeStatus.Text = "刷新失败：" + ex.Message + "。现有已安装运行时和手工选择方式不受影响。";
+                AppendLog("刷新 llama.cpp 官方版本失败：" + ex.Message, true);
+            }
+            finally { btnRefreshRuntimes.Loading = false; }
+        }
+
+        private async void InstallRuntimeClicked(object sender, EventArgs e)
+        {
+            LlamaReleaseAsset asset = SelectedRuntimeAsset();
+            if (asset == null || processManager.IsRunning) return;
+            btnInstallRuntime.Loading = true;
+            btnInstallRuntime.Enabled = false;
+            btnRefreshRuntimes.Enabled = false;
+            runtimeProgress.Value = 0;
+            lblRuntimeStatus.Text = "准备下载 " + asset.ReleaseTag + " · " + asset.Backend + "……";
+            try
+            {
+                Progress<int> progress = new Progress<int>(delegate(int value)
+                {
+                    runtimeProgress.Value = Math.Max(runtimeProgress.Minimum, Math.Min(runtimeProgress.Maximum, value));
+                    lblRuntimeStatus.Text = "正在下载、校验并安装…… " + value + "%";
+                });
+                InstalledRuntime installed = await RuntimeInstaller.InstallAsync(asset, progress);
+                for (int i = config.InstalledRuntimes.Count - 1; i >= 0; i--)
+                    if (string.Equals(config.InstalledRuntimes[i].InstallDirectory, installed.InstallDirectory, StringComparison.OrdinalIgnoreCase))
+                        config.InstalledRuntimes.RemoveAt(i);
+                config.InstalledRuntimes.Add(installed);
+                if (currentProfile != null)
+                {
+                    currentProfile.ServerExecutable = installed.ServerExecutable;
+                    txtServerExe.Text = installed.ServerExecutable;
+                }
+                ConfigStore.Save(config);
+                RefreshInstalledRuntimeOptions();
+                lblRuntimeStatus.Text = "安装完成：" + installed.ReleaseTag + " · " + installed.Backend + "；已用于当前模型配置。";
+                AppendLog(lblRuntimeStatus.Text, false);
+                MessageBox.Show(this, "llama.cpp 运行时安装完成，并已绑定到当前模型配置。\n\n" + installed.ServerExecutable, "安装完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                lblRuntimeStatus.Text = "安装失败：" + ex.Message;
+                AppendLog(lblRuntimeStatus.Text, true);
+                MessageBox.Show(this, ex.Message, "llama.cpp 安装失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally
+            {
+                btnInstallRuntime.Loading = false;
+                btnInstallRuntime.Enabled = cmbRuntimeAsset.Items.Count > 0;
+                btnRefreshRuntimes.Enabled = true;
+            }
+        }
+
+        private void UseRuntimeClicked(object sender, EventArgs e)
+        {
+            if (processManager.IsRunning)
+            {
+                MessageBox.Show(this, "请先停止正在运行的服务，再切换 llama.cpp 版本。", "服务正在运行", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            InstalledRuntime runtime = SelectedInstalledRuntime();
+            if (runtime == null || currentProfile == null) return;
+            if (!File.Exists(runtime.ServerExecutable))
+            {
+                MessageBox.Show(this, "该运行时的 llama-server.exe 已不存在，请重新安装。", "运行时文件缺失", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            currentProfile.ServerExecutable = runtime.ServerExecutable;
+            txtServerExe.Text = runtime.ServerExecutable;
+            ConfigStore.Save(config);
+            AppendLog("当前配置已切换到 " + runtime.ReleaseTag + " · " + runtime.Backend, false);
+            Navigate("profiles");
+        }
+
+        private void OpenRuntimeDirectoryClicked(object sender, EventArgs e)
+        {
+            InstalledRuntime runtime = SelectedInstalledRuntime();
+            string directory = runtime == null ? ConfigStore.RuntimeDirectory : runtime.InstallDirectory;
+            try
+            {
+                Directory.CreateDirectory(directory);
+                Process.Start("explorer.exe", directory);
+            }
+            catch (Exception ex) { MessageBox.Show(this, ex.Message, "无法打开目录", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+        }
+
+        private void RefreshInstalledRuntimeOptions()
+        {
+            if (cmbInstalledRuntime == null) return;
+            cmbInstalledRuntime.Items.Clear();
+            int selected = 0;
+            for (int i = 0; i < config.InstalledRuntimes.Count; i++)
+            {
+                InstalledRuntime runtime = config.InstalledRuntimes[i];
+                cmbInstalledRuntime.Items.Add(runtime);
+                if (currentProfile != null && string.Equals(currentProfile.ServerExecutable, runtime.ServerExecutable, StringComparison.OrdinalIgnoreCase)) selected = i;
+            }
+            if (cmbInstalledRuntime.Items.Count > 0) cmbInstalledRuntime.SelectedIndex = selected;
+            if (btnUseRuntime != null) btnUseRuntime.Enabled = cmbInstalledRuntime.Items.Count > 0;
+        }
+
+        private LlamaReleaseAsset SelectedRuntimeAsset()
+        {
+            int index = cmbRuntimeAsset == null ? -1 : cmbRuntimeAsset.SelectedIndex;
+            return index >= 0 && index < cmbRuntimeAsset.Items.Count ? cmbRuntimeAsset.Items[index] as LlamaReleaseAsset : null;
+        }
+
+        private InstalledRuntime SelectedInstalledRuntime()
+        {
+            int index = cmbInstalledRuntime == null ? -1 : cmbInstalledRuntime.SelectedIndex;
+            return index >= 0 && index < cmbInstalledRuntime.Items.Count ? cmbInstalledRuntime.Items[index] as InstalledRuntime : null;
         }
 
         private void StartClicked(object sender, EventArgs e)
@@ -1515,7 +1889,7 @@ namespace LlamaServerManager
         private void SetupTray()
         {
             trayIcon = new NotifyIcon();
-            trayIcon.Icon = SystemIcons.Application;
+            trayIcon.Icon = Icon ?? SystemIcons.Application;
             trayIcon.Text = "Llama Server Manager " + AppVersion.DisplayVersion;
             trayIcon.Visible = true;
             trayIcon.DoubleClick += delegate { ShowFromTray(); };

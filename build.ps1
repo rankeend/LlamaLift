@@ -1,12 +1,13 @@
 $ErrorActionPreference = "Stop"
 
 $projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$version = "0.1.0-internal"
+$version = "0.2.0-dev"
 $distDir = Join-Path $projectDir "dist"
 $installerDistDir = Join-Path $projectDir "dist-installer"
 $releaseDir = Join-Path $projectDir "release"
 $compiler = Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319\csc.exe"
 $antdDll = Join-Path $projectDir "packages\AntdUI.2.4.4\lib\net48\AntdUI.dll"
+$appIcon = Join-Path $projectDir "assets\LlamaServerManager-llama-icon-v2.ico"
 
 if (-not (Test-Path -LiteralPath $compiler)) {
     throw "找不到 Windows 自带 C# 编译器：$compiler"
@@ -14,6 +15,10 @@ if (-not (Test-Path -LiteralPath $compiler)) {
 
 if (-not (Test-Path -LiteralPath $antdDll)) {
     throw "找不到 AntdUI.dll：$antdDll"
+}
+
+if (-not (Test-Path -LiteralPath $appIcon)) {
+    throw "找不到应用图标：$appIcon"
 }
 
 New-Item -ItemType Directory -Force -Path $distDir | Out-Null
@@ -25,6 +30,8 @@ Get-ChildItem -LiteralPath $installerDistDir -Force | Remove-Item -Recurse -Forc
 $sources = @(
     (Join-Path $projectDir "Models.cs"),
     (Join-Path $projectDir "Services.cs"),
+    (Join-Path $projectDir "RuntimeServices.cs"),
+    (Join-Path $projectDir "AdaptiveTuning.cs"),
     (Join-Path $projectDir "Theme.cs"),
     (Join-Path $projectDir "MainFormV2.cs"),
     (Join-Path $projectDir "Program.cs")
@@ -38,12 +45,16 @@ $arguments = @(
     "/debug-",
     "/codepage:65001",
     "/win32manifest:$projectDir\app.manifest",
+    "/win32icon:$appIcon",
     "/out:$distDir\LlamaServerManager.exe",
     "/reference:System.dll",
     "/reference:System.Core.dll",
     "/reference:System.Drawing.dll",
     "/reference:System.Windows.Forms.dll",
     "/reference:System.Web.Extensions.dll",
+    "/reference:System.Management.dll",
+    "/reference:System.IO.Compression.dll",
+    "/reference:System.IO.Compression.FileSystem.dll",
     "/reference:$antdDll"
 ) + $sources
 

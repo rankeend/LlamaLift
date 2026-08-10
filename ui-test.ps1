@@ -12,8 +12,10 @@ $arguments = @(
     "/main:LlamaServerManager.UiSmokeTest",
     "/out:$testDir\UiSmokeTest.exe",
     "/reference:System.dll", "/reference:System.Core.dll", "/reference:System.Drawing.dll",
-    "/reference:System.Windows.Forms.dll", "/reference:System.Web.Extensions.dll", "/reference:$antdDll",
+    "/reference:System.Windows.Forms.dll", "/reference:System.Web.Extensions.dll", "/reference:System.Management.dll",
+    "/reference:System.IO.Compression.dll", "/reference:System.IO.Compression.FileSystem.dll", "/reference:$antdDll",
     (Join-Path $projectDir "Models.cs"), (Join-Path $projectDir "Services.cs"),
+    (Join-Path $projectDir "RuntimeServices.cs"), (Join-Path $projectDir "AdaptiveTuning.cs"),
     (Join-Path $projectDir "Theme.cs"), (Join-Path $projectDir "MainFormV2.cs"),
     (Join-Path $projectDir "Program.cs"),
     (Join-Path $projectDir "UiSmokeTest.cs")
@@ -23,6 +25,7 @@ if ($LASTEXITCODE -ne 0) { throw "UI test compilation failed: $LASTEXITCODE" }
 $scenarios = @(
     @{ Name="Light-Dashboard"; Theme="Light"; Page="dashboard"; Width=1320; Height=840; Scale="1.0"; Scroll="top" },
     @{ Name="Dark-Profiles"; Theme="Dark"; Page="profiles"; Width=1320; Height=840; Scale="1.0"; Scroll="top" },
+    @{ Name="Light-Runtimes"; Theme="Light"; Page="runtimes"; Width=1320; Height=840; Scale="1.0"; Scroll="top" },
     @{ Name="Light-Settings-Compact"; Theme="Light"; Page="settings"; Width=980; Height=640; Scale="1.0"; Scroll="top" },
     @{ Name="Light-Settings-Compact-Bottom"; Theme="Light"; Page="settings"; Width=980; Height=640; Scale="1.0"; Scroll="bottom" },
     @{ Name="Dark-Profiles-Bottom"; Theme="Dark"; Page="profiles"; Width=1320; Height=840; Scale="1.0"; Scroll="bottom" },
@@ -33,7 +36,7 @@ $scenarios = @(
 )
 $images = @()
 foreach ($scenario in $scenarios) {
-    $image = Join-Path $testDir ("LlamaServerManager-v0.1-" + $scenario.Name + ".png")
+    $image = Join-Path $testDir ("LlamaServerManager-v0.2-" + $scenario.Name + ".png")
     & (Join-Path $testDir "UiSmokeTest.exe") $image $scenario.Theme $scenario.Page $scenario.Width $scenario.Height $scenario.Scale $scenario.Scroll
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $image)) { throw ("UI render test failed: " + $scenario.Name) }
     $images += $image

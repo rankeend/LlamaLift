@@ -42,6 +42,9 @@ namespace LlamaServerManager
             }
             Add(args, "--ctx-size", profile.ContextSize.ToString());
             Add(args, "--parallel", profile.Parallel.ToString());
+            if (profile.Threads > 0) Add(args, "--threads", profile.Threads.ToString());
+            if (profile.BatchSize > 0) Add(args, "--batch-size", profile.BatchSize.ToString());
+            if (profile.UbatchSize > 0) Add(args, "--ubatch-size", profile.UbatchSize.ToString());
             args.Add(profile.FlashAttention ? "--flash-attn on" : "--flash-attn off");
             Add(args, "--cache-type-k", profile.CacheTypeK);
             Add(args, "--cache-type-v", profile.CacheTypeV);
@@ -88,6 +91,10 @@ namespace LlamaServerManager
                 errors.Add("上下文长度不能小于 0；0 表示使用模型默认值。");
             if (profile.Parallel < 1)
                 errors.Add("并发数必须大于 0。");
+            if (profile.Threads < 0)
+                errors.Add("CPU 线程数不能小于 0；0 表示由 llama.cpp 自动选择。");
+            if (profile.BatchSize < 1 || profile.UbatchSize < 1 || profile.UbatchSize > profile.BatchSize)
+                errors.Add("批处理参数无效：ubatch 必须大于 0 且不能超过 batch。");
             return errors;
         }
 

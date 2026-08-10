@@ -8,8 +8,8 @@ namespace LlamaServerManager
 {
     internal static class AppVersion
     {
-        public const string ProductVersion = "0.1.0";
-        public const string DisplayVersion = "v0.1.0-internal";
+        public const string ProductVersion = "0.2.0";
+        public const string DisplayVersion = "v0.2.0-dev";
     }
 
     public sealed class AppConfig
@@ -20,15 +20,17 @@ namespace LlamaServerManager
         public string ThemeMode { get; set; }
         public string AccentName { get; set; }
         public bool FirstRunCompleted { get; set; }
+        public List<InstalledRuntime> InstalledRuntimes { get; set; }
 
         public AppConfig()
         {
-            SchemaVersion = 2;
+            SchemaVersion = 3;
             SelectedProfileId = string.Empty;
             Profiles = new List<ModelProfile>();
             ThemeMode = "System";
             AccentName = "Emerald";
             FirstRunCompleted = false;
+            InstalledRuntimes = new List<InstalledRuntime>();
         }
     }
 
@@ -59,6 +61,11 @@ namespace LlamaServerManager
         public bool Mlock { get; set; }
         public string Reasoning { get; set; }
         public string ExtraArguments { get; set; }
+        public int Threads { get; set; }
+        public int BatchSize { get; set; }
+        public int UbatchSize { get; set; }
+        public string TuningPreset { get; set; }
+        public string LastTuningSummary { get; set; }
 
         public ModelProfile()
         {
@@ -87,6 +94,11 @@ namespace LlamaServerManager
             Mlock = false;
             Reasoning = string.Empty;
             ExtraArguments = string.Empty;
+            Threads = 0;
+            BatchSize = 2048;
+            UbatchSize = 512;
+            TuningPreset = "Balanced";
+            LastTuningSummary = string.Empty;
         }
 
         public static ModelProfile CreateGenericProfile()
@@ -105,6 +117,38 @@ namespace LlamaServerManager
         public override string ToString()
         {
             return Name;
+        }
+    }
+
+    public sealed class InstalledRuntime
+    {
+        public string Id { get; set; }
+        public string ReleaseTag { get; set; }
+        public string Backend { get; set; }
+        public string AssetName { get; set; }
+        public string InstallDirectory { get; set; }
+        public string ServerExecutable { get; set; }
+        public string InstalledAtUtc { get; set; }
+        public string SourceUrl { get; set; }
+        public string Sha256 { get; set; }
+
+        public InstalledRuntime()
+        {
+            Id = Guid.NewGuid().ToString("N");
+            ReleaseTag = string.Empty;
+            Backend = string.Empty;
+            AssetName = string.Empty;
+            InstallDirectory = string.Empty;
+            ServerExecutable = string.Empty;
+            InstalledAtUtc = string.Empty;
+            SourceUrl = string.Empty;
+            Sha256 = string.Empty;
+        }
+
+        public override string ToString()
+        {
+            string state = File.Exists(ServerExecutable) ? string.Empty : " · 文件缺失";
+            return ReleaseTag + " · " + Backend + state;
         }
     }
 
@@ -131,6 +175,11 @@ namespace LlamaServerManager
             get { return Path.Combine(DataDirectory, "logs"); }
         }
 
+        public static string RuntimeDirectory
+        {
+            get { return Path.Combine(DataDirectory, "runtimes"); }
+        }
+
         public static string ConfigPath
         {
             get { return Path.Combine(DataDirectory, "settings.json"); }
@@ -140,6 +189,7 @@ namespace LlamaServerManager
         {
             Directory.CreateDirectory(DataDirectory);
             Directory.CreateDirectory(LogDirectory);
+            Directory.CreateDirectory(RuntimeDirectory);
 
             if (!File.Exists(ConfigPath))
             {
@@ -206,12 +256,16 @@ namespace LlamaServerManager
 
         private static void Normalize(AppConfig config)
         {
-            config.SchemaVersion = 2;
+            config.SchemaVersion = 3;
             if (string.IsNullOrWhiteSpace(config.ThemeMode)) config.ThemeMode = "System";
             if (string.IsNullOrWhiteSpace(config.AccentName)) config.AccentName = "Emerald";
             if (config.Profiles == null)
             {
                 config.Profiles = new List<ModelProfile>();
+            }
+            if (config.InstalledRuntimes == null)
+            {
+                config.InstalledRuntimes = new List<InstalledRuntime>();
             }
 
             foreach (ModelProfile profile in config.Profiles)
@@ -231,6 +285,21 @@ namespace LlamaServerManager
                 if (string.IsNullOrWhiteSpace(profile.GpuLayers)) profile.GpuLayers = "auto";
                 if (string.IsNullOrWhiteSpace(profile.CacheTypeK)) profile.CacheTypeK = "q8_0";
                 if (string.IsNullOrWhiteSpace(profile.CacheTypeV)) profile.CacheTypeV = "q8_0";
+                if (profile.Threads < 0) profile.Threads = 0;
+                if (profile.BatchSize <= 0) profile.BatchSize = 2048;
+                if (profile.UbatchSize <= 0) profile.UbatchSize = 512;
+                if (profile.UbatchSize > profile.BatchSize) profile.UbatchSize = profile.BatchSize;
+                if (string.IsNullOrWhiteSpace(profile.TuningPreset)) profile.TuningPreset = "Balanced";
+            }
+
+            foreach (InstalledRuntime runtime in config.InstalledRuntimes)
+            {
+                if (string.IsNullOrWhiteSpace(runtime.Id)) runtime.Id = Guid.NewGuid().ToString("N");
+                if (runtime.ReleaseTag == null) runtime.ReleaseTag = string.Empty;
+                if (runtime.Backend == null) runtime.Backend = string.Empty;
+                if (runtime.AssetName == null) runtime.AssetName = string.Empty;
+                if (runtime.InstallDirectory == null) runtime.InstallDirectory = string.Empty;
+                if (runtime.ServerExecutable == null) runtime.ServerExecutable = string.Empty;
             }
 
             bool selectedExists = false;

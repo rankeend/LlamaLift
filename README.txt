@@ -1,19 +1,19 @@
-Llama Server Manager v0.1.0-internal
-====================================
+Llama Server Manager v0.2.0-dev
+===============================
 
 状态：私有内测版，暂不公开发布或分发。
 
-这是一个面向 Windows llama.cpp 用户的桌面服务管理器。它只负责管理用户自行提供的
-llama-server.exe、GGUF 模型、启动参数、API 检测和运行日志，不包含 llama.cpp、
-CUDA、模型文件或 API Key。
+这是一个面向 Windows llama.cpp 用户的桌面服务管理器。它可以从 ggml-org/llama.cpp
+官方 Release 安装 Windows 运行时，并根据本机硬件、GGUF 模型和快速/均衡/极限目标
+生成推荐参数。软件不包含模型文件或 API Key。
 
 快速开始
 --------
 1. 运行 LlamaServerManager.exe。
-2. 打开“模型配置”，依次选择 llama-server.exe 和 GGUF 模型。
-3. 可按需要选择 mmproj、API Key 文件并调整上下文、GPU 层数等参数。
-4. 点击“检测后端”，确认 llama.cpp 可以运行。
-5. 保存配置，然后点击“启动服务”。
+2. 打开“运行环境”，检测硬件并安装所需 llama.cpp 官方版本。
+3. 打开“模型配置”，选择 GGUF 模型。
+4. 选择快速、均衡或极限，生成并确认自适应方案。
+5. 检测后端、保存配置，然后点击“启动服务”。
 
 网络安全
 --------
@@ -21,6 +21,7 @@ CUDA、模型文件或 API Key。
 - 若改为 0.0.0.0，请自行设置 Windows 防火墙并配置 API Key。
 - 程序不会修改防火墙、网络类别、系统代理或模型文件。
 - 程序不会读取、显示或上传 API Key 内容。
+- llama.cpp 运行时只从 GitHub 官方 HTTPS 地址下载，并在安装前进行安全检查。
 
 数据位置
 --------
@@ -32,7 +33,7 @@ CUDA、模型文件或 API Key。
 ------
 - Windows 10/11 x64
 - .NET Framework 4.8
-- 支持对应命令行参数的 llama.cpp / llama-server 版本
-- NVIDIA、AMD、Intel 和 CPU 能力由用户选择的 llama.cpp 构建决定
+- 联网安装需要能够访问 GitHub，也可手工选择已有 llama-server.exe
+- 支持官方 Windows x64 CPU、CUDA、Vulkan、SYCL 和 HIP 构建
 
 第三方组件和许可证信息见 THIRD-PARTY-NOTICES.txt。

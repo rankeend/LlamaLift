@@ -88,7 +88,7 @@ namespace LlamaServerManager
 
             FieldInfo field = typeof(MainFormV2).GetField("pages", BindingFlags.Instance | BindingFlags.NonPublic);
             IDictionary pages = field.GetValue(form) as IDictionary;
-            if (pages == null || pages.Count != 4) problems.Add("expected four application pages");
+            if (pages == null || pages.Count != 5) problems.Add("expected five application pages");
             else
             {
                 foreach (DictionaryEntry entry in pages)

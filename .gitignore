@@ -14,7 +14,7 @@ test-output/
 *.exe
 *.pdb
 
-# Local/legacy files that are not part of the v0.1 repository baseline
+# Local/legacy files that are not part of the maintained repository
 MainForm.cs
 部署说明.txt
 

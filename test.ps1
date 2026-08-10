@@ -17,8 +17,13 @@ $arguments = @(
     "/reference:System.dll",
     "/reference:System.Core.dll",
     "/reference:System.Web.Extensions.dll",
+    "/reference:System.Management.dll",
+    "/reference:System.IO.Compression.dll",
+    "/reference:System.IO.Compression.FileSystem.dll",
     (Join-Path $projectDir "Models.cs"),
     (Join-Path $projectDir "Services.cs"),
+    (Join-Path $projectDir "RuntimeServices.cs"),
+    (Join-Path $projectDir "AdaptiveTuning.cs"),
     (Join-Path $projectDir "SmokeTests.cs")
 )
 
