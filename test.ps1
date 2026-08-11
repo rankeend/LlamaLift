@@ -22,6 +22,9 @@ $arguments = @(
     "/reference:System.IO.Compression.FileSystem.dll",
     (Join-Path $projectDir "Models.cs"),
     (Join-Path $projectDir "Services.cs"),
+    (Join-Path $projectDir "CommandEditing.cs"),
+    (Join-Path $projectDir "CommandValidation.cs"),
+    (Join-Path $projectDir "ApiKeyStore.cs"),
     (Join-Path $projectDir "RuntimeServices.cs"),
     (Join-Path $projectDir "AdaptiveTuning.cs"),
     (Join-Path $projectDir "SmokeTests.cs")

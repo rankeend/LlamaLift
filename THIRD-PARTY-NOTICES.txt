@@ -1,4 +1,4 @@
-Llama Server Manager v0.2.0-dev - Third-Party Notices
+LlamaLift v0.3.0-dev - Third-Party Notices
 =====================================================
 
 llama.cpp (downloaded on demand)
@@ -7,7 +7,7 @@ Project: https://github.com/ggml-org/llama.cpp
 Copyright: llama.cpp contributors
 License: MIT License
 
-llama.cpp is not embedded in the Llama Server Manager package. When the user
+llama.cpp is not embedded in the LlamaLift package. When the user
 chooses to install a runtime, the application downloads an official release
 asset directly from the upstream GitHub project. Upstream license and notice
 files remain part of the installed runtime archive.

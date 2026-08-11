@@ -103,7 +103,7 @@ namespace LlamaServerManager
             ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
             HttpWebRequest request = (HttpWebRequest)WebRequest.Create(ReleasesUrl);
             request.Method = "GET";
-            request.UserAgent = "LlamaServerManager/" + AppVersion.ProductVersion;
+            request.UserAgent = "LlamaLift/" + AppVersion.ProductVersion;
             request.Accept = "application/vnd.github+json";
             request.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
             request.Timeout = 20000;
@@ -331,7 +331,7 @@ namespace LlamaServerManager
         private static void Download(string url, string destination, Action<long> progress)
         {
             HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
-            request.UserAgent = "LlamaServerManager/" + AppVersion.ProductVersion;
+            request.UserAgent = "LlamaLift/" + AppVersion.ProductVersion;
             request.AllowAutoRedirect = true;
             request.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
             request.Timeout = 30000;

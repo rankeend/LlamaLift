@@ -8,8 +8,8 @@ namespace LlamaServerManager
 {
     internal static class AppVersion
     {
-        public const string ProductVersion = "0.2.0";
-        public const string DisplayVersion = "v0.2.0-dev";
+        public const string ProductVersion = "0.3.0";
+        public const string DisplayVersion = "v0.3.0-dev";
     }
 
     public sealed class AppConfig
@@ -21,16 +21,20 @@ namespace LlamaServerManager
         public string AccentName { get; set; }
         public bool FirstRunCompleted { get; set; }
         public List<InstalledRuntime> InstalledRuntimes { get; set; }
+        public List<ParameterPreset> ParameterPresets { get; set; }
+        public string SelectedParameterPresetId { get; set; }
 
         public AppConfig()
         {
-            SchemaVersion = 3;
+            SchemaVersion = 6;
             SelectedProfileId = string.Empty;
             Profiles = new List<ModelProfile>();
-            ThemeMode = "System";
-            AccentName = "Emerald";
+            ThemeMode = "Light";
+            AccentName = "Blue";
             FirstRunCompleted = false;
             InstalledRuntimes = new List<InstalledRuntime>();
+            ParameterPresets = ParameterPreset.CreateDefaults();
+            SelectedParameterPresetId = ParameterPresets[1].Id;
         }
     }
 
@@ -59,6 +63,7 @@ namespace LlamaServerManager
         public bool DisableWebUi { get; set; }
         public bool NoMmap { get; set; }
         public bool Mlock { get; set; }
+        public bool EnableMetrics { get; set; }
         public string Reasoning { get; set; }
         public string ExtraArguments { get; set; }
         public int Threads { get; set; }
@@ -66,6 +71,10 @@ namespace LlamaServerManager
         public int UbatchSize { get; set; }
         public string TuningPreset { get; set; }
         public string LastTuningSummary { get; set; }
+        public bool UseCustomCommand { get; set; }
+        public string CustomCommand { get; set; }
+        public string LastCommandValidationSummary { get; set; }
+        public string LastCommandValidatedAtUtc { get; set; }
 
         public ModelProfile()
         {
@@ -92,6 +101,7 @@ namespace LlamaServerManager
             DisableWebUi = false;
             NoMmap = false;
             Mlock = false;
+            EnableMetrics = true;
             Reasoning = string.Empty;
             ExtraArguments = string.Empty;
             Threads = 0;
@@ -99,6 +109,10 @@ namespace LlamaServerManager
             UbatchSize = 512;
             TuningPreset = "Balanced";
             LastTuningSummary = string.Empty;
+            UseCustomCommand = false;
+            CustomCommand = string.Empty;
+            LastCommandValidationSummary = string.Empty;
+            LastCommandValidatedAtUtc = string.Empty;
         }
 
         public static ModelProfile CreateGenericProfile()
@@ -108,10 +122,177 @@ namespace LlamaServerManager
 
         public ModelProfile CloneAs(string newName)
         {
-            ModelProfile copy = (ModelProfile)MemberwiseClone();
+            ModelProfile copy = Clone();
             copy.Id = Guid.NewGuid().ToString("N");
             copy.Name = newName;
             return copy;
+        }
+
+        public ModelProfile Clone()
+        {
+            return (ModelProfile)MemberwiseClone();
+        }
+
+        public void CopyCommandSettingsFrom(ModelProfile source)
+        {
+            if (source == null) return;
+            ServerExecutable = source.ServerExecutable;
+            ModelPath = source.ModelPath;
+            MmprojPath = source.MmprojPath;
+            Alias = source.Alias;
+            ApiKeyFile = source.ApiKeyFile;
+            Host = source.Host;
+            Port = source.Port;
+            ContextSize = source.ContextSize;
+            Parallel = source.Parallel;
+            GpuLayers = source.GpuLayers;
+            FitEnabled = source.FitEnabled;
+            FitTarget = source.FitTarget;
+            FlashAttention = source.FlashAttention;
+            CacheTypeK = source.CacheTypeK;
+            CacheTypeV = source.CacheTypeV;
+            ImageMinTokens = source.ImageMinTokens;
+            Jinja = source.Jinja;
+            DisableWebUi = source.DisableWebUi;
+            NoMmap = source.NoMmap;
+            Mlock = source.Mlock;
+            EnableMetrics = source.EnableMetrics;
+            Reasoning = source.Reasoning;
+            ExtraArguments = source.ExtraArguments;
+            Threads = source.Threads;
+            BatchSize = source.BatchSize;
+            UbatchSize = source.UbatchSize;
+        }
+
+        public override string ToString()
+        {
+            return Name;
+        }
+    }
+
+    public sealed class ParameterPreset
+    {
+        public string Id { get; set; }
+        public string Name { get; set; }
+        public int ContextSize { get; set; }
+        public int Parallel { get; set; }
+        public string GpuLayers { get; set; }
+        public bool FitEnabled { get; set; }
+        public int FitTarget { get; set; }
+        public bool FlashAttention { get; set; }
+        public string CacheTypeK { get; set; }
+        public string CacheTypeV { get; set; }
+        public int ImageMinTokens { get; set; }
+        public bool Jinja { get; set; }
+        public bool DisableWebUi { get; set; }
+        public bool NoMmap { get; set; }
+        public bool Mlock { get; set; }
+        public bool EnableMetrics { get; set; }
+        public string Reasoning { get; set; }
+        public string ExtraArguments { get; set; }
+        public int Threads { get; set; }
+        public int BatchSize { get; set; }
+        public int UbatchSize { get; set; }
+
+        public ParameterPreset()
+        {
+            Id = Guid.NewGuid().ToString("N");
+            Name = "未命名预设";
+            ContextSize = 8192;
+            Parallel = 1;
+            GpuLayers = "auto";
+            FitEnabled = true;
+            FitTarget = 1024;
+            FlashAttention = true;
+            CacheTypeK = "f16";
+            CacheTypeV = "f16";
+            Jinja = true;
+            EnableMetrics = true;
+            BatchSize = 2048;
+            UbatchSize = 512;
+            Reasoning = string.Empty;
+            ExtraArguments = string.Empty;
+        }
+
+        public void Capture(ModelProfile profile)
+        {
+            if (profile == null) return;
+            ContextSize = profile.ContextSize;
+            Parallel = profile.Parallel;
+            GpuLayers = profile.GpuLayers;
+            FitEnabled = profile.FitEnabled;
+            FitTarget = profile.FitTarget;
+            FlashAttention = profile.FlashAttention;
+            CacheTypeK = profile.CacheTypeK;
+            CacheTypeV = profile.CacheTypeV;
+            ImageMinTokens = profile.ImageMinTokens;
+            Jinja = profile.Jinja;
+            DisableWebUi = profile.DisableWebUi;
+            NoMmap = profile.NoMmap;
+            Mlock = profile.Mlock;
+            EnableMetrics = profile.EnableMetrics;
+            Reasoning = profile.Reasoning;
+            ExtraArguments = profile.ExtraArguments;
+            Threads = profile.Threads;
+            BatchSize = profile.BatchSize;
+            UbatchSize = profile.UbatchSize;
+        }
+
+        public void ApplyTo(ModelProfile profile)
+        {
+            if (profile == null) return;
+            profile.ContextSize = ContextSize;
+            profile.Parallel = Parallel;
+            profile.GpuLayers = GpuLayers;
+            profile.FitEnabled = FitEnabled;
+            profile.FitTarget = FitTarget;
+            profile.FlashAttention = FlashAttention;
+            profile.CacheTypeK = CacheTypeK;
+            profile.CacheTypeV = CacheTypeV;
+            profile.ImageMinTokens = ImageMinTokens;
+            profile.Jinja = Jinja;
+            profile.DisableWebUi = DisableWebUi;
+            profile.NoMmap = NoMmap;
+            profile.Mlock = Mlock;
+            profile.EnableMetrics = EnableMetrics;
+            profile.Reasoning = Reasoning;
+            profile.ExtraArguments = ExtraArguments;
+            profile.Threads = Threads;
+            profile.BatchSize = BatchSize;
+            profile.UbatchSize = UbatchSize;
+        }
+
+        public static List<ParameterPreset> CreateDefaults()
+        {
+            ModelProfile fast = ModelProfile.CreateGenericProfile();
+            fast.ContextSize = 4096;
+            fast.CacheTypeK = "q4_0";
+            fast.CacheTypeV = "q4_0";
+            fast.BatchSize = 2048;
+            fast.UbatchSize = 512;
+
+            ModelProfile balanced = ModelProfile.CreateGenericProfile();
+            balanced.ContextSize = 8192;
+            balanced.CacheTypeK = "q8_0";
+            balanced.CacheTypeV = "q8_0";
+
+            ModelProfile extreme = ModelProfile.CreateGenericProfile();
+            extreme.ContextSize = 32768;
+            extreme.CacheTypeK = "f16";
+            extreme.CacheTypeV = "f16";
+            extreme.BatchSize = 4096;
+            extreme.UbatchSize = 1024;
+
+            ParameterPreset first = new ParameterPreset();
+            first.Name = "预设 1 · 快速";
+            first.Capture(fast);
+            ParameterPreset second = new ParameterPreset();
+            second.Name = "预设 2 · 均衡";
+            second.Capture(balanced);
+            ParameterPreset third = new ParameterPreset();
+            third.Name = "预设 3 · 极限";
+            third.Capture(extreme);
+            return new List<ParameterPreset> { first, second, third };
         }
 
         public override string ToString()
@@ -166,7 +347,9 @@ namespace LlamaServerManager
             get
             {
                 if (IsPortable) return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "data");
-                return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LlamaServerManager");
+                string branded = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LlamaLift");
+                string legacy = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LlamaServerManager");
+                return Directory.Exists(branded) || !Directory.Exists(legacy) ? branded : legacy;
             }
         }
 
@@ -180,6 +363,11 @@ namespace LlamaServerManager
             get { return Path.Combine(DataDirectory, "runtimes"); }
         }
 
+        public static string ApiKeyDirectory
+        {
+            get { return Path.Combine(DataDirectory, "api-keys"); }
+        }
+
         public static string ConfigPath
         {
             get { return Path.Combine(DataDirectory, "settings.json"); }
@@ -190,6 +378,7 @@ namespace LlamaServerManager
             Directory.CreateDirectory(DataDirectory);
             Directory.CreateDirectory(LogDirectory);
             Directory.CreateDirectory(RuntimeDirectory);
+            Directory.CreateDirectory(ApiKeyDirectory);
 
             if (!File.Exists(ConfigPath))
             {
@@ -256,9 +445,10 @@ namespace LlamaServerManager
 
         private static void Normalize(AppConfig config)
         {
-            config.SchemaVersion = 3;
+            int previousSchema = config.SchemaVersion;
+            config.SchemaVersion = 6;
             if (string.IsNullOrWhiteSpace(config.ThemeMode)) config.ThemeMode = "System";
-            if (string.IsNullOrWhiteSpace(config.AccentName)) config.AccentName = "Emerald";
+            if (string.IsNullOrWhiteSpace(config.AccentName)) config.AccentName = "Blue";
             if (config.Profiles == null)
             {
                 config.Profiles = new List<ModelProfile>();
@@ -267,6 +457,29 @@ namespace LlamaServerManager
             {
                 config.InstalledRuntimes = new List<InstalledRuntime>();
             }
+            if (config.ParameterPresets == null || config.ParameterPresets.Count == 0)
+            {
+                config.ParameterPresets = ParameterPreset.CreateDefaults();
+            }
+
+            foreach (ParameterPreset preset in config.ParameterPresets)
+            {
+                if (string.IsNullOrWhiteSpace(preset.Id)) preset.Id = Guid.NewGuid().ToString("N");
+                if (string.IsNullOrWhiteSpace(preset.Name)) preset.Name = "未命名预设";
+                if (preset.ContextSize < 0) preset.ContextSize = 8192;
+                if (preset.Parallel <= 0) preset.Parallel = 1;
+                if (string.IsNullOrWhiteSpace(preset.GpuLayers)) preset.GpuLayers = "auto";
+                if (string.IsNullOrWhiteSpace(preset.CacheTypeK)) preset.CacheTypeK = "f16";
+                if (string.IsNullOrWhiteSpace(preset.CacheTypeV)) preset.CacheTypeV = "f16";
+                if (preset.BatchSize <= 0) preset.BatchSize = 2048;
+                if (preset.UbatchSize <= 0) preset.UbatchSize = 512;
+                if (preset.UbatchSize > preset.BatchSize) preset.UbatchSize = preset.BatchSize;
+                if (previousSchema < 6) preset.EnableMetrics = true;
+            }
+            bool selectedPresetExists = false;
+            foreach (ParameterPreset preset in config.ParameterPresets)
+                if (preset.Id == config.SelectedParameterPresetId) { selectedPresetExists = true; break; }
+            if (!selectedPresetExists) config.SelectedParameterPresetId = config.ParameterPresets[0].Id;
 
             foreach (ModelProfile profile in config.Profiles)
             {
@@ -290,6 +503,10 @@ namespace LlamaServerManager
                 if (profile.UbatchSize <= 0) profile.UbatchSize = 512;
                 if (profile.UbatchSize > profile.BatchSize) profile.UbatchSize = profile.BatchSize;
                 if (string.IsNullOrWhiteSpace(profile.TuningPreset)) profile.TuningPreset = "Balanced";
+                if (profile.CustomCommand == null) profile.CustomCommand = string.Empty;
+                if (profile.LastCommandValidationSummary == null) profile.LastCommandValidationSummary = string.Empty;
+                if (profile.LastCommandValidatedAtUtc == null) profile.LastCommandValidatedAtUtc = string.Empty;
+                if (previousSchema < 6) profile.EnableMetrics = true;
             }
 
             foreach (InstalledRuntime runtime in config.InstalledRuntimes)

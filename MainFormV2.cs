@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Text;
 using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -18,10 +19,14 @@ namespace LlamaServerManager
 {
     public sealed class MainFormV2 : Form
     {
+        private static readonly string MonospaceFontFamily = ResolveMonospaceFontFamily();
         private readonly AppConfig config;
         private readonly ServerProcessManager processManager;
+        private readonly SystemPerformanceMonitor systemPerformanceMonitor;
+        private readonly LlamaMetricsClient llamaMetricsClient;
         private readonly Dictionary<string, Control> pages = new Dictionary<string, Control>();
         private readonly Dictionary<string, AButton> navButtons = new Dictionary<string, AButton>();
+        private readonly Dictionary<AButton, string> accentChoiceButtons = new Dictionary<AButton, string>();
         private readonly List<Control> configurationControls = new List<Control>();
 
         private ModelProfile currentProfile;
@@ -31,17 +36,35 @@ namespace LlamaServerManager
         private bool healthCheckBusy;
         private bool externalServiceDetected;
         private bool forceExit;
+        private bool bindingPresets;
+        private bool loadingCommandEditor;
+        private bool commandEditorDirty;
+        private bool monitoringBusy;
+        private bool monitoringPaused;
         private string currentPage = "dashboard";
 
         private APanel sidebar;
         private APanel pageHost;
+        private TableLayoutPanel shellLayout;
+        private TableLayoutPanel mainLayout;
+        private Label lblBrandTitle;
+        private Label lblBrandVersion;
         private TableLayoutPanel profilePage;
         private TableLayoutPanel profileColumns;
         private System.Windows.Forms.Panel profileScroll;
+        private System.Windows.Forms.Panel profileFilesScroll;
+        private System.Windows.Forms.Panel profileRuntimeScroll;
         private AntdUI.Panel profileCommandCard;
         private APanel profileFilesCard;
         private APanel profileRuntimeCard;
         private bool profileCardsStacked;
+        private TableLayoutPanel monitoringPageLayout;
+        private TableLayoutPanel systemMetricsGrid;
+        private TableLayoutPanel modelMetricsGrid;
+        private TableLayoutPanel systemChartsGrid;
+        private TableLayoutPanel modelChartsGrid;
+        private bool monitoringMetricsStacked;
+        private bool monitoringChartsStacked;
         private Label lblHeaderTitle;
         private Label lblHeaderSubtitle;
         private Label lblHeroStatus;
@@ -81,10 +104,23 @@ namespace LlamaServerManager
         private ASwitch swNoWebUi;
         private ASwitch swNoMmap;
         private ASwitch swMlock;
+        private ASwitch swMetrics;
         private AInput txtExtraArgs;
         private AInput txtCommand;
         private ASelect cmbTuningPreset;
         private AButton btnAutoTune;
+
+        private TableLayoutPanel commandPage;
+        private RichTextBox txtCommandEditor;
+        private ASelect cmbParameterPreset;
+        private AButton btnApplyParameterPreset;
+        private AButton btnSaveParameterPreset;
+        private AButton btnRenameParameterPreset;
+        private AButton btnParseCommand;
+        private AButton btnGenerateCommand;
+        private Label lblCommandEditorState;
+        private Label lblCommandParseSummary;
+        private Label lblPresetSummary;
 
         private ASelect cmbRuntimeAsset;
         private ASelect cmbInstalledRuntime;
@@ -105,11 +141,43 @@ namespace LlamaServerManager
         private ASelect cmbAccent;
         private System.Windows.Forms.Timer healthTimer;
         private NotifyIcon trayIcon;
+        private System.Windows.Forms.Timer monitorTimer;
+        private AButton btnPauseMonitoring;
+        private Label lblMonitoringStatus;
+        private Label lblMonitoringUpdated;
+        private Label lblSystemCpu;
+        private Label lblSystemMemory;
+        private Label lblSystemGpu;
+        private Label lblSystemVram;
+        private Label lblServerCpu;
+        private Label lblServerMemory;
+        private Label lblSystemDisk;
+        private Label lblSystemNetwork;
+        private Label lblPromptSpeed;
+        private Label lblGenerationSpeed;
+        private Label lblActiveRequests;
+        private Label lblDeferredRequests;
+        private Label lblContextUsage;
+        private Label lblTokenTotals;
+        private Label lblSlotUsage;
+        private Label lblServerUptime;
+        private Label lblSystemDetails;
+        private Label lblModelDetails;
+        private RealtimeMetricChart chartCpu;
+        private RealtimeMetricChart chartMemory;
+        private RealtimeMetricChart chartGpu;
+        private RealtimeMetricChart chartServerMemory;
+        private RealtimeMetricChart chartPromptSpeed;
+        private RealtimeMetricChart chartGenerationSpeed;
+        private RealtimeMetricChart chartRequests;
+        private RealtimeMetricChart chartContext;
 
         public MainFormV2()
         {
             config = ConfigStore.Load();
             processManager = new ServerProcessManager();
+            systemPerformanceMonitor = new SystemPerformanceMonitor();
+            llamaMetricsClient = new LlamaMetricsClient();
             processManager.LogReceived += ProcessManagerLogReceived;
             processManager.RunningChanged += ProcessManagerRunningChanged;
 
@@ -124,14 +192,19 @@ namespace LlamaServerManager
             healthTimer.Tick += async delegate { await RefreshHealthAsync(); };
             healthTimer.Start();
 
-            AppendLog("Llama Server Manager " + AppVersion.DisplayVersion + " 已启动。", false);
+            monitorTimer = new System.Windows.Forms.Timer();
+            monitorTimer.Interval = 1000;
+            monitorTimer.Tick += async delegate { await RefreshMonitoringAsync(); };
+            monitorTimer.Start();
+
+            AppendLog("LlamaLift " + AppVersion.DisplayVersion + " 已启动。", false);
             AppendLog("运行模式：" + (ConfigStore.IsPortable ? "便携版" : "安装版") + "；配置目录：" + ConfigStore.DataDirectory, false);
             UpdateDashboardSummary();
         }
 
         private void InitializeWindow()
         {
-            Text = "Llama Server Manager " + AppVersion.DisplayVersion;
+            Text = "LlamaLift " + AppVersion.DisplayVersion;
             try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
             StartPosition = FormStartPosition.CenterScreen;
             MinimumSize = new Size(940, 600);
@@ -143,7 +216,9 @@ namespace LlamaServerManager
             MinimizeBox = true;
             MaximizeBox = true;
             ShowInTaskbar = true;
-            Shown += delegate { EnsureWindowFitsScreen(); UpdateProfileResponsiveLayout(); };
+            Shown += delegate { EnsureWindowFitsScreen(); UpdateResponsiveLayouts(); };
+            DpiChanged += delegate { BeginInvoke(new Action(UpdateResponsiveLayouts)); };
+            SizeChanged += delegate { if (IsHandleCreated && !IsDisposed) BeginInvoke(new Action(UpdateResponsiveLayouts)); };
             FormClosing += MainFormClosing;
         }
 
@@ -161,37 +236,45 @@ namespace LlamaServerManager
         private void BuildInterface()
         {
             TableLayoutPanel shell = new TableLayoutPanel();
+            shellLayout = shell;
             shell.Dock = DockStyle.Fill;
+            shell.Margin = new Padding(0);
             shell.ColumnCount = 2;
             shell.RowCount = 1;
-            shell.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 224F));
+            shell.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 216F));
             shell.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
             Controls.Add(shell);
 
             sidebar = BuildSidebar();
+            sidebar.Margin = new Padding(0);
             shell.Controls.Add(sidebar, 0, 0);
 
             TableLayoutPanel main = new TableLayoutPanel();
+            mainLayout = main;
             main.Dock = DockStyle.Fill;
+            main.Margin = new Padding(0);
             main.Tag = "background";
-            main.Padding = new Padding(18, 0, 18, 16);
+            main.Padding = new Padding(24, 0, 24, 24);
             main.RowCount = 2;
             main.ColumnCount = 1;
-            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 78F));
+            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 86F));
             main.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
             shell.Controls.Add(main, 1, 0);
 
             main.Controls.Add(BuildTopBar(), 0, 0);
             pageHost = new APanel();
             pageHost.Dock = DockStyle.Fill;
-            pageHost.Radius = 14;
-            pageHost.Shadow = 2;
+            pageHost.Margin = new Padding(0);
+            pageHost.Radius = 0;
+            pageHost.Shadow = 0;
             pageHost.Padding = new Padding(0);
-            pageHost.Tag = "surface";
+            pageHost.Tag = "background";
             main.Controls.Add(pageHost, 0, 1);
 
             AddPage("dashboard", BuildDashboardPage());
+            AddPage("monitoring", BuildMonitoringPage());
             AddPage("profiles", BuildProfilesPage());
+            AddPage("parameters", BuildParametersPage());
             AddPage("runtimes", BuildRuntimeManagerPage());
             AddPage("logs", BuildLogsPage());
             AddPage("settings", BuildSettingsPage());
@@ -204,40 +287,56 @@ namespace LlamaServerManager
             panel.Dock = DockStyle.Fill;
             panel.Radius = 0;
             panel.Tag = "sidebar";
-            panel.Padding = new Padding(16, 20, 16, 16);
+            panel.Padding = new Padding(14, 18, 12, 18);
 
             TableLayoutPanel layout = new TableLayoutPanel();
             layout.Dock = DockStyle.Fill;
+            layout.Tag = "sidebar";
             layout.ColumnCount = 1;
-            layout.RowCount = 8;
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 98F));
+            layout.RowCount = 10;
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 96F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48F));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48F));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48F));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48F));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48F));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48F));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 72F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 70F));
             panel.Controls.Add(layout);
 
-            System.Windows.Forms.Panel brand = new System.Windows.Forms.Panel();
+            TableLayoutPanel brand = new TableLayoutPanel();
             brand.Dock = DockStyle.Fill;
             brand.Tag = "sidebar";
-            Label logo = MakeLabel("LLAMA\nCONTROL", 18F, FontStyle.Bold);
-            logo.Location = new Point(6, 5);
-            logo.AutoSize = true;
-            Label version = MakeMutedLabel("SERVER MANAGER  ·  V" + AppVersion.ProductVersion, 8.5F);
-            version.Location = new Point(7, 61);
-            version.AutoSize = true;
-            brand.Controls.Add(logo);
-            brand.Controls.Add(version);
+            brand.ColumnCount = 1;
+            brand.RowCount = 2;
+            brand.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            brand.RowStyles.Add(new RowStyle(SizeType.Percent, 66F));
+            brand.RowStyles.Add(new RowStyle(SizeType.Percent, 34F));
+            brand.Padding = new Padding(6, 2, 6, 6);
+            lblBrandTitle = MakeLabel("LlamaLift", 18F, FontStyle.Bold);
+            lblBrandTitle.Dock = DockStyle.Fill;
+            lblBrandTitle.AutoSize = false;
+            lblBrandTitle.AutoEllipsis = false;
+            lblBrandTitle.TextAlign = ContentAlignment.MiddleLeft;
+            lblBrandVersion = MakeMutedLabel("本地模型，一键起飞。 · v" + AppVersion.ProductVersion, 8.25F);
+            lblBrandVersion.Font = new Font("Segoe UI", 8.5F, FontStyle.Regular, GraphicsUnit.Point);
+            lblBrandVersion.Dock = DockStyle.Fill;
+            lblBrandVersion.AutoSize = false;
+            lblBrandVersion.AutoEllipsis = false;
+            lblBrandVersion.TextAlign = ContentAlignment.MiddleLeft;
+            brand.Controls.Add(lblBrandTitle, 0, 0);
+            brand.Controls.Add(lblBrandVersion, 0, 1);
             layout.Controls.Add(brand, 0, 0);
 
-            layout.Controls.Add(MakeNavButton("dashboard", "总览", "▦"), 0, 1);
-            layout.Controls.Add(MakeNavButton("profiles", "模型配置", "◫"), 0, 2);
-            layout.Controls.Add(MakeNavButton("runtimes", "运行环境", "↓"), 0, 3);
-            layout.Controls.Add(MakeNavButton("logs", "运行日志", "≡"), 0, 4);
-            layout.Controls.Add(MakeNavButton("settings", "外观与设置", "⚙"), 0, 5);
+            layout.Controls.Add(MakeNavButton("dashboard", "服务总览"), 0, 1);
+            layout.Controls.Add(MakeNavButton("monitoring", "性能监测"), 0, 2);
+            layout.Controls.Add(MakeNavButton("profiles", "模型配置"), 0, 3);
+            layout.Controls.Add(MakeNavButton("parameters", "参数工作台"), 0, 4);
+            layout.Controls.Add(MakeNavButton("runtimes", "运行环境"), 0, 5);
+            layout.Controls.Add(MakeNavButton("logs", "运行日志"), 0, 6);
+            layout.Controls.Add(MakeNavButton("settings", "外观与设置"), 0, 7);
 
             System.Windows.Forms.Panel footer = new System.Windows.Forms.Panel();
             footer.Dock = DockStyle.Fill;
@@ -250,7 +349,7 @@ namespace LlamaServerManager
             mode.AutoSize = true;
             footer.Controls.Add(machine);
             footer.Controls.Add(mode);
-            layout.Controls.Add(footer, 0, 7);
+            layout.Controls.Add(footer, 0, 9);
             return panel;
         }
 
@@ -262,25 +361,36 @@ namespace LlamaServerManager
             bar.ColumnCount = 1;
             bar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
 
-            System.Windows.Forms.Panel titles = new System.Windows.Forms.Panel();
+            TableLayoutPanel titles = new TableLayoutPanel();
             titles.Dock = DockStyle.Fill;
             titles.Tag = "background";
+            titles.ColumnCount = 1;
+            titles.RowCount = 2;
+            titles.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            titles.RowStyles.Add(new RowStyle(SizeType.Percent, 58F));
+            titles.RowStyles.Add(new RowStyle(SizeType.Percent, 42F));
+            titles.Padding = new Padding(2, 8, 0, 7);
             lblHeaderTitle = MakeLabel("服务总览", 18F, FontStyle.Bold);
-            lblHeaderTitle.Location = new Point(2, 15);
-            lblHeaderTitle.AutoSize = true;
+            lblHeaderTitle.Dock = DockStyle.Fill;
+            lblHeaderTitle.AutoSize = false;
+            lblHeaderTitle.AutoEllipsis = false;
+            lblHeaderTitle.TextAlign = ContentAlignment.BottomLeft;
             lblHeaderSubtitle = MakeMutedLabel("管理 llama.cpp 后端、模型和 API", 9F);
-            lblHeaderSubtitle.Location = new Point(4, 46);
-            lblHeaderSubtitle.AutoSize = true;
-            titles.Controls.Add(lblHeaderTitle);
-            titles.Controls.Add(lblHeaderSubtitle);
+            lblHeaderSubtitle.Dock = DockStyle.Fill;
+            lblHeaderSubtitle.AutoSize = false;
+            lblHeaderSubtitle.AutoEllipsis = false;
+            lblHeaderSubtitle.TextAlign = ContentAlignment.TopLeft;
+            titles.Controls.Add(lblHeaderTitle, 0, 0);
+            titles.Controls.Add(lblHeaderSubtitle, 0, 1);
             bar.Controls.Add(titles, 0, 0);
 
             cmbAccent = MakeSelect(96);
-            cmbAccent.Items.AddRange(new object[] { "翡翠", "蓝色", "紫罗兰", "橙色", "玫红" });
+            cmbAccent.Items.AddRange(new object[] { "蓝色", "翡翠", "紫罗兰", "橙色", "玫红" });
             cmbAccent.SelectedIndexChanged += delegate { QuickAccentChanged(); };
             cmbTheme = MakeSelect(96);
             cmbTheme.Items.AddRange(new object[] { "跟随系统", "浅色", "深色" });
             cmbTheme.SelectedIndexChanged += delegate { QuickThemeChanged(); };
+
             return bar;
         }
 
@@ -293,7 +403,7 @@ namespace LlamaServerManager
             page.RowStyles.Add(new RowStyle(SizeType.Absolute, 116F));
             page.RowStyles.Add(new RowStyle(SizeType.Absolute, 132F));
             page.RowStyles.Add(new RowStyle(SizeType.Absolute, 280F));
-            page.AutoScrollMinSize = new Size(920, 704);
+            page.AutoScrollMinSize = new Size(0, 704);
 
             APanel hero = NewCard();
             hero.Margin = new Padding(0, 0, 0, 14);
@@ -327,8 +437,10 @@ namespace LlamaServerManager
             heroActions.Padding = new Padding(0, 21, 0, 0);
             heroActions.Tag = "surface";
             btnStart = MakeButton("启动服务", 108, AntdUI.TTypeMini.Primary, StartClicked);
-            btnStop = MakeButton("停止", 78, AntdUI.TTypeMini.Error, StopClicked);
-            btnRestart = MakeButton("重启", 78, AntdUI.TTypeMini.Warn, RestartClicked);
+            btnStop = MakeButton("停止", 78, AntdUI.TTypeMini.Default, StopClicked);
+            btnStop.Tag = "danger-action";
+            btnRestart = MakeButton("重启", 78, AntdUI.TTypeMini.Default, RestartClicked);
+            btnRestart.Tag = "warning-action";
             heroActions.Controls.Add(btnStart);
             heroActions.Controls.Add(btnStop);
             heroActions.Controls.Add(btnRestart);
@@ -360,15 +472,15 @@ namespace LlamaServerManager
             actionLayout.Controls.Add(quickTitle, 0, 0);
             FlowLayoutPanel quick = new FlowLayoutPanel();
             quick.Dock = DockStyle.Fill;
-            quick.WrapContents = false;
+            quick.WrapContents = true;
             quick.Tag = "surface";
-            btnDetect = MakeButton("检测后端", 104, AntdUI.TTypeMini.Default, DetectBackendClicked);
-            btnTest = MakeButton("测试双协议", 112, AntdUI.TTypeMini.Default, TestApiClicked);
+            btnDetect = MakeButton("检测后端", 88, AntdUI.TTypeMini.Default, DetectBackendClicked);
+            btnTest = MakeButton("测试双协议", 96, AntdUI.TTypeMini.Default, TestApiClicked);
             quick.Controls.Add(btnDetect);
             quick.Controls.Add(btnTest);
-            quick.Controls.Add(MakeButton("复制 API 地址", 124, AntdUI.TTypeMini.Default, CopyEndpointClicked));
-            quick.Controls.Add(MakeButton("打开 WebUI", 108, AntdUI.TTypeMini.Default, OpenWebUiClicked));
-            quick.Controls.Add(MakeButton("编辑模型配置", 124, AntdUI.TTypeMini.Default, delegate { Navigate("profiles"); }));
+            quick.Controls.Add(MakeButton("复制 API 地址", 108, AntdUI.TTypeMini.Default, CopyEndpointClicked));
+            quick.Controls.Add(MakeButton("打开 WebUI", 92, AntdUI.TTypeMini.Default, OpenWebUiClicked));
+            quick.Controls.Add(MakeButton("编辑模型配置", 108, AntdUI.TTypeMini.Default, delegate { Navigate("profiles"); }));
             actionLayout.Controls.Add(quick, 0, 1);
             actions.Controls.Add(actionLayout);
             page.Controls.Add(actions, 0, 2);
@@ -388,6 +500,213 @@ namespace LlamaServerManager
             recent.Controls.Add(recentLayout);
             page.Controls.Add(recent, 0, 3);
             return page;
+        }
+
+        private Control BuildMonitoringPage()
+        {
+            TableLayoutPanel page = NewPage();
+            monitoringPageLayout = page;
+            page.Padding = new Padding(22);
+            page.RowCount = 9;
+            page.RowStyles.Add(new RowStyle(SizeType.Absolute, 98F));
+            page.RowStyles.Add(new RowStyle(SizeType.Absolute, 58F));
+            page.RowStyles.Add(new RowStyle(SizeType.Absolute, 218F));
+            page.RowStyles.Add(new RowStyle(SizeType.Absolute, 486F));
+            page.RowStyles.Add(new RowStyle(SizeType.Absolute, 136F));
+            page.RowStyles.Add(new RowStyle(SizeType.Absolute, 72F));
+            page.RowStyles.Add(new RowStyle(SizeType.Absolute, 218F));
+            page.RowStyles.Add(new RowStyle(SizeType.Absolute, 486F));
+            page.RowStyles.Add(new RowStyle(SizeType.Absolute, 150F));
+            page.AutoScrollMinSize = new Size(0, 1938);
+
+            APanel liveCard = NewCard();
+            liveCard.Margin = new Padding(0, 0, 0, 14);
+            TableLayoutPanel live = new TableLayoutPanel();
+            live.Dock = DockStyle.Fill;
+            live.Padding = new Padding(20, 12, 18, 12);
+            live.ColumnCount = 3;
+            live.RowCount = 2;
+            live.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            live.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 210F));
+            live.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 118F));
+            live.RowStyles.Add(new RowStyle(SizeType.Percent, 58F));
+            live.RowStyles.Add(new RowStyle(SizeType.Percent, 42F));
+            Label liveTitle = MakeLabel("实时性能中心", 14F, FontStyle.Bold);
+            liveTitle.Dock = DockStyle.Fill;
+            liveTitle.TextAlign = ContentAlignment.MiddleLeft;
+            lblMonitoringStatus = MakeLabel("LIVE · 1 秒刷新", 9F, FontStyle.Bold);
+            lblMonitoringStatus.Dock = DockStyle.Fill;
+            lblMonitoringStatus.TextAlign = ContentAlignment.MiddleRight;
+            btnPauseMonitoring = MakeButton("暂停监测", 106, AntdUI.TTypeMini.Default, ToggleMonitoringClicked);
+            btnPauseMonitoring.Dock = DockStyle.Fill;
+            btnPauseMonitoring.Margin = new Padding(12, 4, 0, 4);
+            lblMonitoringUpdated = MakeMutedLabel("正在建立本机与 llama-server 指标基线……", 8.5F);
+            lblMonitoringUpdated.Dock = DockStyle.Fill;
+            lblMonitoringUpdated.TextAlign = ContentAlignment.MiddleLeft;
+            live.Controls.Add(liveTitle, 0, 0);
+            live.Controls.Add(lblMonitoringStatus, 1, 0);
+            live.Controls.Add(btnPauseMonitoring, 2, 0);
+            live.Controls.Add(lblMonitoringUpdated, 0, 1);
+            live.SetColumnSpan(lblMonitoringUpdated, 3);
+            liveCard.Controls.Add(live);
+            page.Controls.Add(liveCard, 0, 0);
+
+            page.Controls.Add(BuildMonitoringSectionHeader("系统性能", "Windows 全局资源与 llama-server 进程消耗，所有采样仅在本机处理。"), 0, 1);
+
+            TableLayoutPanel systemMetrics = NewMonitoringMetricGrid();
+            systemMetricsGrid = systemMetrics;
+            lblSystemCpu = AddMonitoringMetric(systemMetrics, 0, 0, "CPU", "—", "全机利用率");
+            lblSystemMemory = AddMonitoringMetric(systemMetrics, 1, 0, "内存", "—", "已用比例");
+            lblSystemGpu = AddMonitoringMetric(systemMetrics, 2, 0, "GPU", "—", "最繁忙图形引擎");
+            lblSystemVram = AddMonitoringMetric(systemMetrics, 3, 0, "显存", "—", "独占显存用量");
+            lblServerCpu = AddMonitoringMetric(systemMetrics, 0, 1, "服务 CPU", "—", "llama-server 进程");
+            lblServerMemory = AddMonitoringMetric(systemMetrics, 1, 1, "服务内存", "—", "工作集 / 私有内存");
+            lblSystemDisk = AddMonitoringMetric(systemMetrics, 2, 1, "磁盘吞吐", "—", "全机读取 + 写入");
+            lblSystemNetwork = AddMonitoringMetric(systemMetrics, 3, 1, "网络吞吐", "—", "全机接收 + 发送");
+            page.Controls.Add(systemMetrics, 0, 2);
+
+            TableLayoutPanel systemCharts = NewChartGrid();
+            systemChartsGrid = systemCharts;
+            chartCpu = AddMonitoringChart(systemCharts, 0, 0, "CPU 使用率", "%", 100D);
+            chartMemory = AddMonitoringChart(systemCharts, 1, 0, "内存使用率", "%", 100D);
+            chartGpu = AddMonitoringChart(systemCharts, 0, 1, "GPU 使用率", "%", 100D);
+            chartServerMemory = AddMonitoringChart(systemCharts, 1, 1, "llama-server 工作集", " GB", 0D);
+            page.Controls.Add(systemCharts, 0, 3);
+
+            APanel systemDetailsCard = NewCard();
+            systemDetailsCard.Margin = new Padding(0, 14, 0, 14);
+            systemDetailsCard.Padding = new Padding(20, 14, 20, 14);
+            lblSystemDetails = MakeMutedLabel("正在读取处理器、显卡、磁盘、网络与服务进程明细……", 8.75F);
+            lblSystemDetails.Dock = DockStyle.Fill;
+            lblSystemDetails.AutoSize = false;
+            lblSystemDetails.TextAlign = ContentAlignment.MiddleLeft;
+            systemDetailsCard.Controls.Add(lblSystemDetails);
+            page.Controls.Add(systemDetailsCard, 0, 4);
+
+            page.Controls.Add(BuildMonitoringSectionHeader("大模型性能", "来自 llama-server /metrics 与 /slots：速度、吞吐、并发、排队和上下文。"), 0, 5);
+
+            TableLayoutPanel modelMetrics = NewMonitoringMetricGrid();
+            modelMetricsGrid = modelMetrics;
+            lblPromptSpeed = AddMonitoringMetric(modelMetrics, 0, 0, "预填充速度", "—", "Prompt tokens/s");
+            lblGenerationSpeed = AddMonitoringMetric(modelMetrics, 1, 0, "生成速度", "—", "生成 tokens/s");
+            lblActiveRequests = AddMonitoringMetric(modelMetrics, 2, 0, "处理中", "—", "正在推理的请求");
+            lblDeferredRequests = AddMonitoringMetric(modelMetrics, 3, 0, "排队", "—", "等待可用槽位");
+            lblContextUsage = AddMonitoringMetric(modelMetrics, 0, 1, "上下文占用", "—", "当前槽位使用率");
+            lblTokenTotals = AddMonitoringMetric(modelMetrics, 1, 1, "累计 tokens", "—", "输入 + 输出");
+            lblSlotUsage = AddMonitoringMetric(modelMetrics, 2, 1, "并发槽位", "—", "活跃 / 总数");
+            lblServerUptime = AddMonitoringMetric(modelMetrics, 3, 1, "运行时长", "—", "管理器启动的服务");
+            page.Controls.Add(modelMetrics, 0, 6);
+
+            TableLayoutPanel modelCharts = NewChartGrid();
+            modelChartsGrid = modelCharts;
+            chartPromptSpeed = AddMonitoringChart(modelCharts, 0, 0, "预填充速度", " tok/s", 0D);
+            chartGenerationSpeed = AddMonitoringChart(modelCharts, 1, 0, "生成速度", " tok/s", 0D);
+            chartRequests = AddMonitoringChart(modelCharts, 0, 1, "活跃请求", "", 0D);
+            chartContext = AddMonitoringChart(modelCharts, 1, 1, "上下文占用", "%", 100D);
+            page.Controls.Add(modelCharts, 0, 7);
+
+            APanel modelDetailsCard = NewCard();
+            modelDetailsCard.Margin = new Padding(0, 14, 0, 0);
+            modelDetailsCard.Padding = new Padding(20, 14, 20, 14);
+            lblModelDetails = MakeMutedLabel("等待 llama-server。使用简易配置启动时会默认加入 --metrics；自定义命令也可手动加入。", 8.75F);
+            lblModelDetails.Dock = DockStyle.Fill;
+            lblModelDetails.AutoSize = false;
+            lblModelDetails.TextAlign = ContentAlignment.MiddleLeft;
+            modelDetailsCard.Controls.Add(lblModelDetails);
+            page.Controls.Add(modelDetailsCard, 0, 8);
+            return page;
+        }
+
+        private static Control BuildMonitoringSectionHeader(string title, string subtitle)
+        {
+            TableLayoutPanel header = new TableLayoutPanel();
+            header.Dock = DockStyle.Fill;
+            header.Tag = "background";
+            header.Padding = new Padding(2, 8, 0, 4);
+            header.ColumnCount = 2;
+            header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 138F));
+            header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            Label heading = MakeLabel(title, 13F, FontStyle.Bold);
+            heading.Dock = DockStyle.Fill;
+            heading.TextAlign = ContentAlignment.MiddleLeft;
+            Label description = MakeMutedLabel(subtitle, 8.5F);
+            description.Dock = DockStyle.Fill;
+            description.TextAlign = ContentAlignment.MiddleLeft;
+            header.Controls.Add(heading, 0, 0);
+            header.Controls.Add(description, 1, 0);
+            return header;
+        }
+
+        private static TableLayoutPanel NewMonitoringMetricGrid()
+        {
+            TableLayoutPanel grid = new TableLayoutPanel();
+            grid.Dock = DockStyle.Fill;
+            grid.Tag = "background";
+            grid.ColumnCount = 4;
+            grid.RowCount = 2;
+            for (int i = 0; i < 4; i++) grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25F));
+            grid.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
+            grid.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
+            return grid;
+        }
+
+        private Label AddMonitoringMetric(TableLayoutPanel grid, int column, int row, string title, string value, string hint)
+        {
+            APanel card = NewCard();
+            card.Margin = new Padding(column == 0 ? 0 : 7, row == 0 ? 0 : 7, column == 3 ? 0 : 7, row == 1 ? 0 : 7);
+            TableLayoutPanel content = new TableLayoutPanel();
+            content.Dock = DockStyle.Fill;
+            content.Padding = new Padding(16, 10, 12, 8);
+            content.RowCount = 3;
+            content.RowStyles.Add(new RowStyle(SizeType.Absolute, 22F));
+            content.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            content.RowStyles.Add(new RowStyle(SizeType.Absolute, 20F));
+            Label caption = MakeMutedLabel(title.ToUpperInvariant(), 8F);
+            caption.Dock = DockStyle.Fill;
+            caption.TextAlign = ContentAlignment.MiddleLeft;
+            Label metric = MakeLabel(value, 13F, FontStyle.Bold);
+            metric.Font = new Font("Segoe UI", 13F, FontStyle.Bold, GraphicsUnit.Point);
+            metric.Dock = DockStyle.Fill;
+            metric.AutoSize = false;
+            metric.TextAlign = ContentAlignment.MiddleLeft;
+            Label description = MakeMutedLabel(hint, 7.75F);
+            description.Dock = DockStyle.Fill;
+            description.TextAlign = ContentAlignment.MiddleLeft;
+            content.Controls.Add(caption, 0, 0);
+            content.Controls.Add(metric, 0, 1);
+            content.Controls.Add(description, 0, 2);
+            card.Controls.Add(content);
+            grid.Controls.Add(card, column, row);
+            return metric;
+        }
+
+        private static TableLayoutPanel NewChartGrid()
+        {
+            TableLayoutPanel grid = new TableLayoutPanel();
+            grid.Dock = DockStyle.Fill;
+            grid.Tag = "background";
+            grid.ColumnCount = 2;
+            grid.RowCount = 2;
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+            grid.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
+            grid.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
+            return grid;
+        }
+
+        private RealtimeMetricChart AddMonitoringChart(TableLayoutPanel grid, int column, int row, string title, string unit, double maximum)
+        {
+            APanel card = NewCard();
+            card.Margin = new Padding(column == 0 ? 0 : 7, row == 0 ? 0 : 7, column == 1 ? 0 : 7, row == 1 ? 0 : 7);
+            card.Padding = new Padding(2);
+            RealtimeMetricChart chart = new RealtimeMetricChart();
+            chart.Dock = DockStyle.Fill;
+            chart.ChartTitle = title;
+            chart.Unit = unit;
+            chart.FixedMaximum = maximum;
+            card.Controls.Add(chart);
+            grid.Controls.Add(card, column, row);
+            return chart;
         }
 
         private Control BuildProfilesPage()
@@ -434,7 +753,8 @@ namespace LlamaServerManager
             profileActions.Tag = "surface";
             AButton newButton = MakeButton("新建", 70, AntdUI.TTypeMini.Default, NewProfileClicked);
             AButton cloneButton = MakeButton("复制", 70, AntdUI.TTypeMini.Default, CloneProfileClicked);
-            AButton deleteButton = MakeButton("删除", 70, AntdUI.TTypeMini.Error, DeleteProfileClicked);
+            AButton deleteButton = MakeButton("删除", 70, AntdUI.TTypeMini.Default, DeleteProfileClicked);
+            deleteButton.Tag = "danger-action";
             AButton saveButton = MakeButton("保存配置", 94, AntdUI.TTypeMini.Primary, SaveProfileClicked);
             newButton.Dock = cloneButton.Dock = deleteButton.Dock = saveButton.Dock = DockStyle.Fill;
             profileActions.Controls.Add(newButton, 0, 0);
@@ -448,17 +768,16 @@ namespace LlamaServerManager
             System.Windows.Forms.Panel scroll = new System.Windows.Forms.Panel();
             profileScroll = scroll;
             scroll.Dock = DockStyle.Fill;
-            scroll.AutoScroll = true;
+            scroll.AutoScroll = false;
             scroll.Tag = "background";
             TableLayoutPanel columns = new TableLayoutPanel();
-            columns.Dock = DockStyle.Top;
+            columns.Dock = DockStyle.Fill;
             columns.AutoSize = false;
-            columns.Height = 590;
             columns.ColumnCount = 2;
             columns.RowCount = 1;
             columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
             columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
-            columns.RowStyles.Add(new RowStyle(SizeType.Absolute, 590F));
+            columns.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
             profileColumns = columns;
             profileFilesCard = BuildFilesCard();
             profileRuntimeCard = BuildRuntimeCard();
@@ -477,12 +796,12 @@ namespace LlamaServerManager
             commandLayout.RowCount = 2;
             commandLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 25F));
             commandLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-            Label commandTitle = MakeLabel("实际启动命令 · 只读", 9.5F, FontStyle.Bold);
+            Label commandTitle = MakeLabel("启动命令预览 · 前往“参数工作台”可编辑并反向同步", 9.5F, FontStyle.Bold);
             commandTitle.Dock = DockStyle.Fill;
             commandLayout.Controls.Add(commandTitle, 0, 0);
             txtCommand = MakeInput("生成的 llama-server 命令");
             txtCommand.ReadOnly = true;
-            txtCommand.Font = new Font("Consolas", 8.5F);
+            txtCommand.Font = MakeMonospaceFont(8.5F);
             txtCommand.Dock = DockStyle.Fill;
             commandLayout.Controls.Add(txtCommand, 0, 1);
             commandCard.Controls.Add(commandLayout);
@@ -490,13 +809,174 @@ namespace LlamaServerManager
             return page;
         }
 
+        private Control BuildParametersPage()
+        {
+            TableLayoutPanel page = NewPage();
+            commandPage = page;
+            page.Padding = new Padding(22);
+            page.RowCount = 4;
+            page.RowStyles.Add(new RowStyle(SizeType.Absolute, 112F));
+            page.RowStyles.Add(new RowStyle(SizeType.Absolute, 154F));
+            page.RowStyles.Add(new RowStyle(SizeType.Absolute, 382F));
+            page.RowStyles.Add(new RowStyle(SizeType.Absolute, 142F));
+            page.AutoScrollMinSize = new Size(0, 830);
+
+            APanel intro = NewCard();
+            intro.Margin = new Padding(0, 0, 0, 14);
+            TableLayoutPanel introLayout = new TableLayoutPanel();
+            introLayout.Dock = DockStyle.Fill;
+            introLayout.Padding = new Padding(20, 14, 20, 14);
+            introLayout.ColumnCount = 2;
+            introLayout.RowCount = 2;
+            introLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            introLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 144F));
+            introLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34F));
+            introLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            Label introTitle = MakeLabel("进阶参数模式", 14F, FontStyle.Bold);
+            introTitle.Dock = DockStyle.Fill;
+            introLayout.Controls.Add(introTitle, 0, 0);
+            Label introBody = MakeMutedLabel("直接编辑完整 llama-server 命令。保存时会自动静态预检并给出修改建议；风险提示不会强制阻止保存，未知参数也会原样保留。", 9F);
+            introBody.Dock = DockStyle.Fill;
+            introBody.AutoSize = false;
+            introBody.AutoEllipsis = false;
+            introBody.TextAlign = ContentAlignment.MiddleLeft;
+            introLayout.Controls.Add(introBody, 0, 1);
+            AButton backToForm = MakeButton("返回简易配置", 136, AntdUI.TTypeMini.Default, delegate { Navigate("profiles"); });
+            backToForm.Dock = DockStyle.Fill;
+            backToForm.Margin = new Padding(8, 15, 0, 15);
+            introLayout.Controls.Add(backToForm, 1, 0);
+            introLayout.SetRowSpan(backToForm, 2);
+            intro.Controls.Add(introLayout);
+            page.Controls.Add(intro, 0, 0);
+
+            APanel presetCard = NewCard();
+            presetCard.Margin = new Padding(0, 0, 0, 14);
+            TableLayoutPanel presetLayout = new TableLayoutPanel();
+            presetLayout.Dock = DockStyle.Fill;
+            presetLayout.Padding = new Padding(20, 12, 20, 12);
+            presetLayout.ColumnCount = 4;
+            presetLayout.RowCount = 3;
+            presetLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            presetLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 116F));
+            presetLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 126F));
+            presetLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 104F));
+            presetLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30F));
+            presetLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44F));
+            presetLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            Label presetTitle = MakeLabel("参数预设", 11F, FontStyle.Bold);
+            presetTitle.Dock = DockStyle.Fill;
+            presetLayout.Controls.Add(presetTitle, 0, 0);
+            presetLayout.SetColumnSpan(presetTitle, 4);
+            cmbParameterPreset = MakeSelect(320);
+            cmbParameterPreset.Dock = DockStyle.Fill;
+            cmbParameterPreset.Margin = new Padding(0, 5, 10, 5);
+            cmbParameterPreset.SelectedIndexChanged += ParameterPresetSelectedIndexChanged;
+            presetLayout.Controls.Add(cmbParameterPreset, 0, 1);
+            btnApplyParameterPreset = MakeButton("应用到当前配置", 108, AntdUI.TTypeMini.Default, ApplyParameterPresetClicked);
+            btnSaveParameterPreset = MakeButton("保存当前参数", 118, AntdUI.TTypeMini.Default, SaveParameterPresetClicked);
+            btnRenameParameterPreset = MakeButton("重命名", 96, AntdUI.TTypeMini.Default, RenameParameterPresetClicked);
+            btnApplyParameterPreset.Dock = btnSaveParameterPreset.Dock = btnRenameParameterPreset.Dock = DockStyle.Fill;
+            btnApplyParameterPreset.Margin = btnSaveParameterPreset.Margin = btnRenameParameterPreset.Margin = new Padding(6, 5, 0, 5);
+            presetLayout.Controls.Add(btnApplyParameterPreset, 1, 1);
+            presetLayout.Controls.Add(btnSaveParameterPreset, 2, 1);
+            presetLayout.Controls.Add(btnRenameParameterPreset, 3, 1);
+            lblPresetSummary = MakeMutedLabel("预设只保存性能与高级参数，不会替换模型路径、程序路径、端口或监听地址。", 8.5F);
+            lblPresetSummary.Dock = DockStyle.Fill;
+            lblPresetSummary.AutoSize = false;
+            lblPresetSummary.TextAlign = ContentAlignment.MiddleLeft;
+            presetLayout.Controls.Add(lblPresetSummary, 0, 2);
+            presetLayout.SetColumnSpan(lblPresetSummary, 4);
+            presetCard.Controls.Add(presetLayout);
+            page.Controls.Add(presetCard, 0, 1);
+
+            APanel editorCard = NewCard();
+            editorCard.Margin = new Padding(0, 0, 0, 14);
+            TableLayoutPanel editorLayout = new TableLayoutPanel();
+            editorLayout.Dock = DockStyle.Fill;
+            editorLayout.Padding = new Padding(20, 14, 20, 14);
+            editorLayout.ColumnCount = 1;
+            editorLayout.RowCount = 3;
+            editorLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38F));
+            editorLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            editorLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 50F));
+            TableLayoutPanel editorHeader = new TableLayoutPanel();
+            editorHeader.Dock = DockStyle.Fill;
+            editorHeader.ColumnCount = 2;
+            editorHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            editorHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 240F));
+            Label editorTitle = MakeLabel("完整启动命令", 11F, FontStyle.Bold);
+            editorTitle.Dock = DockStyle.Fill;
+            lblCommandEditorState = MakeMutedLabel("已与简易表单同步", 8.5F);
+            lblCommandEditorState.Dock = DockStyle.Fill;
+            lblCommandEditorState.TextAlign = ContentAlignment.MiddleRight;
+            editorHeader.Controls.Add(editorTitle, 0, 0);
+            editorHeader.Controls.Add(lblCommandEditorState, 1, 0);
+            editorLayout.Controls.Add(editorHeader, 0, 0);
+
+            txtCommandEditor = new RichTextBox();
+            txtCommandEditor.Dock = DockStyle.Fill;
+            txtCommandEditor.BorderStyle = BorderStyle.None;
+            txtCommandEditor.Font = MakeMonospaceFont(9.25F);
+            txtCommandEditor.AcceptsTab = true;
+            txtCommandEditor.DetectUrls = false;
+            txtCommandEditor.WordWrap = true;
+            txtCommandEditor.Margin = new Padding(0, 2, 0, 8);
+            txtCommandEditor.TextChanged += CommandEditorTextChanged;
+            editorLayout.Controls.Add(txtCommandEditor, 0, 1);
+
+            TableLayoutPanel editorActions = new TableLayoutPanel();
+            editorActions.Dock = DockStyle.Fill;
+            editorActions.ColumnCount = 3;
+            editorActions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            editorActions.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 156F));
+            editorActions.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 156F));
+            Label editorHint = MakeMutedLabel("支持短参数、--参数=值、换行与带空格路径。Ctrl+Z 可撤销编辑。", 8.25F);
+            editorHint.Dock = DockStyle.Fill;
+            editorHint.TextAlign = ContentAlignment.MiddleLeft;
+            editorActions.Controls.Add(editorHint, 0, 0);
+            btnGenerateCommand = MakeButton("从简易表单重新生成", 148, AntdUI.TTypeMini.Default, GenerateCommandFromFormClicked);
+            btnParseCommand = MakeButton("校验并保存", 148, AntdUI.TTypeMini.Primary, ParseCommandClicked);
+            btnGenerateCommand.Dock = btnParseCommand.Dock = DockStyle.Fill;
+            btnGenerateCommand.Margin = btnParseCommand.Margin = new Padding(8, 7, 0, 7);
+            editorActions.Controls.Add(btnGenerateCommand, 1, 0);
+            editorActions.Controls.Add(btnParseCommand, 2, 0);
+            editorLayout.Controls.Add(editorActions, 0, 2);
+            editorCard.Controls.Add(editorLayout);
+            page.Controls.Add(editorCard, 0, 2);
+
+            APanel resultCard = NewCard();
+            resultCard.Padding = new Padding(20, 14, 20, 14);
+            TableLayoutPanel resultLayout = new TableLayoutPanel();
+            resultLayout.Dock = DockStyle.Fill;
+            resultLayout.RowCount = 2;
+            resultLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34F));
+            resultLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            Label resultTitle = MakeLabel("参数预检与同步结果", 11F, FontStyle.Bold);
+            resultTitle.Dock = DockStyle.Fill;
+            lblCommandParseSummary = MakeMutedLabel("等待编辑。保存前会检查语法、文件、端口、参数组合与鉴权风险。", 9F);
+            lblCommandParseSummary.Dock = DockStyle.Fill;
+            lblCommandParseSummary.AutoSize = false;
+            lblCommandParseSummary.TextAlign = ContentAlignment.TopLeft;
+            resultLayout.Controls.Add(resultTitle, 0, 0);
+            resultLayout.Controls.Add(lblCommandParseSummary, 0, 1);
+            resultCard.Controls.Add(resultLayout);
+            page.Controls.Add(resultCard, 0, 3);
+
+            configurationControls.AddRange(new Control[] {
+                txtCommandEditor, cmbParameterPreset, btnApplyParameterPreset, btnSaveParameterPreset,
+                btnRenameParameterPreset, btnGenerateCommand, btnParseCommand
+            });
+            return page;
+        }
+
         private void UpdateProfileResponsiveLayout()
         {
-            if (profilePage == null || profileColumns == null || profileFilesCard == null || profileRuntimeCard == null) return;
-            float scale = Math.Max(1F, sidebar == null ? Font.Height / 15F : sidebar.Width / 224F);
+            if (profilePage == null || profileColumns == null || profileFilesCard == null || profileRuntimeCard == null ||
+                profileFilesScroll == null || profileRuntimeScroll == null) return;
+            float scale = Math.Max(1F, Math.Max(DeviceDpi / 96F, sidebar == null ? Font.Height / 15F : sidebar.Width / 216F));
             int availableWidth = Math.Max(0, ClientSize.Width - (sidebar == null ? 0 : sidebar.Width) - Convert.ToInt32(70F * scale));
-            bool stack = availableWidth < Convert.ToInt32(950F * scale);
-            int cardHeight = Convert.ToInt32(590F * scale);
+            bool stack = availableWidth < Convert.ToInt32(980F * scale);
+            int sectionHeight = Math.Max(Convert.ToInt32(360F * scale), Math.Min(Convert.ToInt32(590F * scale), Math.Max(0, profileScroll.ClientSize.Height)));
 
             profileColumns.SuspendLayout();
             profilePage.SuspendLayout();
@@ -506,31 +986,35 @@ namespace LlamaServerManager
                 profileColumns.RowStyles.Clear();
                 if (stack)
                 {
+                    profileScroll.AutoScroll = true;
+                    profileColumns.Dock = DockStyle.Top;
                     profileColumns.ColumnCount = 1;
                     profileColumns.RowCount = 2;
                     profileColumns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-                    profileColumns.RowStyles.Add(new RowStyle(SizeType.Absolute, cardHeight));
-                    profileColumns.RowStyles.Add(new RowStyle(SizeType.Absolute, cardHeight));
+                    profileColumns.RowStyles.Add(new RowStyle(SizeType.Absolute, sectionHeight));
+                    profileColumns.RowStyles.Add(new RowStyle(SizeType.Absolute, sectionHeight));
                     profileColumns.SetCellPosition(profileFilesCard, new TableLayoutPanelCellPosition(0, 0));
                     profileColumns.SetCellPosition(profileRuntimeCard, new TableLayoutPanelCellPosition(0, 1));
                     profileFilesCard.Margin = new Padding(0, 0, 0, Convert.ToInt32(8F * scale));
                     profileRuntimeCard.Margin = new Padding(0, Convert.ToInt32(8F * scale), 0, 0);
-                    profileColumns.Height = cardHeight * 2 + Convert.ToInt32(16F * scale);
+                    profileColumns.Height = sectionHeight * 2 + Convert.ToInt32(16F * scale);
+                    profileScroll.AutoScrollMinSize = new Size(0, profileColumns.Height + Convert.ToInt32(8F * scale));
                 }
                 else
                 {
+                    profileScroll.AutoScroll = false;
+                    profileScroll.AutoScrollMinSize = Size.Empty;
+                    profileColumns.Dock = DockStyle.Fill;
                     profileColumns.ColumnCount = 2;
                     profileColumns.RowCount = 1;
                     profileColumns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
                     profileColumns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
-                    profileColumns.RowStyles.Add(new RowStyle(SizeType.Absolute, cardHeight));
+                    profileColumns.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
                     profileColumns.SetCellPosition(profileFilesCard, new TableLayoutPanelCellPosition(0, 0));
                     profileColumns.SetCellPosition(profileRuntimeCard, new TableLayoutPanelCellPosition(1, 0));
                     profileFilesCard.Margin = new Padding(0, 0, Convert.ToInt32(8F * scale), 0);
                     profileRuntimeCard.Margin = new Padding(Convert.ToInt32(8F * scale), 0, 0, 0);
-                    profileColumns.Height = cardHeight;
                 }
-                profileScroll.AutoScrollMinSize = new Size(Convert.ToInt32(720F * scale), profileColumns.Height + Convert.ToInt32(20F * scale));
                 profileCardsStacked = stack;
             }
             finally
@@ -540,40 +1024,157 @@ namespace LlamaServerManager
             }
         }
 
+        private void UpdateResponsiveLayouts()
+        {
+            FitPagesToHost();
+            UpdateProfileResponsiveLayout();
+            UpdateMonitoringResponsiveLayout();
+            if (sidebar != null) sidebar.PerformLayout();
+            if (pageHost != null) pageHost.PerformLayout();
+        }
+
+        private void FitPagesToHost()
+        {
+            if (shellLayout != null && ClientSize.Width > 0)
+            {
+                shellLayout.MaximumSize = ClientSize;
+                shellLayout.Size = ClientSize;
+                shellLayout.PerformLayout();
+            }
+            if (mainLayout != null && sidebar != null)
+            {
+                int mainWidth = Math.Max(0, ClientSize.Width - sidebar.Width);
+                mainLayout.MaximumSize = new Size(mainWidth, ClientSize.Height);
+                mainLayout.Size = new Size(mainWidth, ClientSize.Height);
+                mainLayout.PerformLayout();
+            }
+            if (pageHost == null || mainLayout == null) return;
+            int headerHeight = mainLayout.RowStyles.Count > 0 ? Convert.ToInt32(mainLayout.RowStyles[0].Height) : 0;
+            Size hostSize = new Size(
+                Math.Max(0, mainLayout.ClientSize.Width - mainLayout.Padding.Horizontal),
+                Math.Max(0, mainLayout.ClientSize.Height - mainLayout.Padding.Vertical - headerHeight));
+            pageHost.MaximumSize = hostSize;
+            pageHost.Size = hostSize;
+            pageHost.PerformLayout();
+            if (pageHost.ClientSize.Width <= 0) return;
+            int width = pageHost.ClientSize.Width;
+            foreach (Control page in pages.Values)
+            {
+                page.MaximumSize = new Size(width, 0);
+                page.Width = width;
+            }
+        }
+
+        private void UpdateMonitoringResponsiveLayout()
+        {
+            if (monitoringPageLayout == null || systemMetricsGrid == null || modelMetricsGrid == null ||
+                systemChartsGrid == null || modelChartsGrid == null) return;
+            float scale = Math.Max(1F, Math.Max(DeviceDpi / 96F, sidebar == null ? 1F : sidebar.Width / 216F));
+            int availableWidth = Math.Max(0, ClientSize.Width - (sidebar == null ? 0 : sidebar.Width) - Convert.ToInt32(110F * scale));
+            bool stackMetrics = availableWidth < Convert.ToInt32(900F * scale);
+            bool stackCharts = availableWidth < Convert.ToInt32(760F * scale);
+            if (stackMetrics != monitoringMetricsStacked)
+            {
+                ReflowMonitoringGrid(systemMetricsGrid, stackMetrics ? 2 : 4);
+                ReflowMonitoringGrid(modelMetricsGrid, stackMetrics ? 2 : 4);
+                monitoringMetricsStacked = stackMetrics;
+            }
+            if (stackCharts != monitoringChartsStacked)
+            {
+                ReflowMonitoringGrid(systemChartsGrid, stackCharts ? 1 : 2);
+                ReflowMonitoringGrid(modelChartsGrid, stackCharts ? 1 : 2);
+                monitoringChartsStacked = stackCharts;
+            }
+
+            float metricHeight = (stackMetrics ? 410F : 218F) * scale;
+            float chartHeight = (stackCharts ? 900F : 486F) * scale;
+            monitoringPageLayout.RowStyles[2].Height = metricHeight;
+            monitoringPageLayout.RowStyles[3].Height = chartHeight;
+            monitoringPageLayout.RowStyles[6].Height = metricHeight;
+            monitoringPageLayout.RowStyles[7].Height = chartHeight;
+            int total = Convert.ToInt32((98F + 58F + 136F + 72F + 150F) * scale + metricHeight * 2F + chartHeight * 2F + 44F * scale);
+            monitoringPageLayout.AutoScrollMinSize = new Size(0, total);
+        }
+
+        private static void ReflowMonitoringGrid(TableLayoutPanel grid, int columns)
+        {
+            List<Control> children = new List<Control>();
+            foreach (Control child in grid.Controls) children.Add(child);
+            int rows = Convert.ToInt32(Math.Ceiling(children.Count / Math.Max(1D, columns)));
+            grid.SuspendLayout();
+            try
+            {
+                grid.ColumnCount = columns;
+                grid.RowCount = rows;
+                grid.ColumnStyles.Clear();
+                grid.RowStyles.Clear();
+                for (int column = 0; column < columns; column++) grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F / columns));
+                for (int row = 0; row < rows; row++) grid.RowStyles.Add(new RowStyle(SizeType.Percent, 100F / rows));
+                for (int i = 0; i < children.Count; i++)
+                {
+                    int column = i % columns;
+                    int row = i / columns;
+                    grid.SetCellPosition(children[i], new TableLayoutPanelCellPosition(column, row));
+                    children[i].Margin = new Padding(column == 0 ? 0 : 7, row == 0 ? 0 : 7,
+                        column == columns - 1 ? 0 : 7, row == rows - 1 ? 0 : 7);
+                }
+            }
+            finally { grid.ResumeLayout(true); }
+        }
+
+        private static System.Windows.Forms.Panel NewIndependentScrollRegion()
+        {
+            System.Windows.Forms.Panel region = new System.Windows.Forms.Panel();
+            region.Dock = DockStyle.Fill;
+            region.AutoScroll = true;
+            region.Tag = "surface";
+            region.TabStop = true;
+            return region;
+        }
+
         private APanel BuildFilesCard()
         {
             APanel card = NewCard();
             card.Margin = new Padding(0, 0, 8, 0);
-            card.Padding = new Padding(18, 14, 18, 16);
-            TableLayoutPanel table = new TableLayoutPanel();
-            table.Dock = DockStyle.Fill;
-            table.AutoSize = true;
-            table.ColumnCount = 3;
-            table.RowCount = 11;
-            table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 92F));
-            table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 42F));
-            table.RowStyles.Add(new RowStyle(SizeType.Absolute, 34F));
-            for (int i = 1; i < 8; i++) table.RowStyles.Add(new RowStyle(SizeType.Absolute, 48F));
-
+            card.Padding = new Padding(18, 12, 10, 14);
+            TableLayoutPanel frame = new TableLayoutPanel();
+            frame.Dock = DockStyle.Fill;
+            frame.ColumnCount = 1;
+            frame.RowCount = 2;
+            frame.RowStyles.Add(new RowStyle(SizeType.Absolute, 44F));
+            frame.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
             Label title = MakeLabel("模型与程序", 11F, FontStyle.Bold);
             title.Dock = DockStyle.Fill;
-            table.Controls.Add(title, 0, 0);
-            table.SetColumnSpan(title, 3);
+            title.TextAlign = ContentAlignment.MiddleLeft;
+            frame.Controls.Add(title, 0, 0);
+            System.Windows.Forms.Panel body = NewIndependentScrollRegion();
+            profileFilesScroll = body;
+            TableLayoutPanel table = new TableLayoutPanel();
+            table.Dock = DockStyle.Top;
+            table.AutoSize = true;
+            table.ColumnCount = 3;
+            table.RowCount = 7;
+            table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 92F));
+            table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 70F));
+            for (int i = 0; i < 6; i++) table.RowStyles.Add(new RowStyle(SizeType.Absolute, 48F));
+            table.RowStyles.Add(new RowStyle(SizeType.Absolute, 58F));
 
-            txtProfileName = AddInputRow(table, 1, "配置名称", "例如：Qwen 35B · 主服务", null);
-            txtServerExe = AddInputRow(table, 2, "llama-server", "选择 llama-server.exe", delegate { BrowseFile(txtServerExe, "llama-server.exe|llama-server.exe|可执行文件|*.exe|所有文件|*.*"); });
-            txtModel = AddInputRow(table, 3, "主模型", "选择 GGUF 模型", delegate { BrowseFile(txtModel, "GGUF 模型|*.gguf|所有文件|*.*"); });
-            txtMmproj = AddInputRow(table, 4, "视觉模型", "可选：mmproj-*.gguf", delegate { BrowseFile(txtMmproj, "GGUF 视觉模型|*.gguf|所有文件|*.*"); });
-            txtAlias = AddInputRow(table, 5, "模型别名", "API 请求中的 model 名称", null);
-            txtApiKeyFile = AddInputRow(table, 6, "API Key", "可选：每行一个 Key 的文本文件", delegate { BrowseFile(txtApiKeyFile, "文本文件|*.txt|所有文件|*.*"); });
+            txtProfileName = AddInputRow(table, 0, "配置名称", "例如：Qwen 35B · 主服务", null);
+            txtServerExe = AddInputRow(table, 1, "llama-server", "选择 llama-server.exe", delegate { BrowseFile(txtServerExe, "llama-server.exe|llama-server.exe|可执行文件|*.exe|所有文件|*.*"); });
+            txtModel = AddInputRow(table, 2, "主模型", "选择 GGUF 模型", delegate { BrowseFile(txtModel, "GGUF 模型|*.gguf|所有文件|*.*"); });
+            txtMmproj = AddInputRow(table, 3, "视觉模型", "可选：mmproj-*.gguf", delegate { BrowseFile(txtMmproj, "GGUF 视觉模型|*.gguf|所有文件|*.*"); });
+            txtAlias = AddInputRow(table, 4, "模型别名", "API 请求中的 model 名称", null);
+            txtApiKeyFile = AddInputRow(table, 5, "API Key", "可选：选择托管或外部 Key 文件", delegate { OpenApiKeyManager(); }, "管理");
 
-            Label note = MakeMutedLabel("管理器只保存文件路径，不复制或删除模型。API Key 为空时将不启用鉴权。", 8.5F);
+            Label note = MakeMutedLabel("模型文件只保存路径。托管 API Key 位于应用数据目录；为空时不启用鉴权。", 8.5F);
             note.Dock = DockStyle.Fill;
             note.TextAlign = ContentAlignment.MiddleLeft;
-            table.Controls.Add(note, 0, 7);
+            table.Controls.Add(note, 0, 6);
             table.SetColumnSpan(note, 3);
-            card.Controls.Add(table);
+            body.Controls.Add(table);
+            frame.Controls.Add(body, 0, 1);
+            card.Controls.Add(frame);
             return card;
         }
 
@@ -581,71 +1182,77 @@ namespace LlamaServerManager
         {
             APanel card = NewCard();
             card.Margin = new Padding(8, 0, 0, 0);
-            card.Padding = new Padding(18, 14, 18, 16);
-            TableLayoutPanel table = new TableLayoutPanel();
-            table.Dock = DockStyle.Fill;
-            table.AutoSize = true;
-            table.ColumnCount = 4;
-            table.RowCount = 8;
-            table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90F));
-            table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
-            table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90F));
-            table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
-            table.RowStyles.Add(new RowStyle(SizeType.Absolute, 34F));
-            for (int i = 1; i < 11; i++) table.RowStyles.Add(new RowStyle(SizeType.Absolute, 48F));
-            table.RowStyles[9].Height = 82F;
-
+            card.Padding = new Padding(18, 12, 10, 14);
+            TableLayoutPanel frame = new TableLayoutPanel();
+            frame.Dock = DockStyle.Fill;
+            frame.ColumnCount = 1;
+            frame.RowCount = 2;
+            frame.RowStyles.Add(new RowStyle(SizeType.Absolute, 44F));
+            frame.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
             Label title = MakeLabel("运行参数", 11F, FontStyle.Bold);
             title.Dock = DockStyle.Fill;
-            table.Controls.Add(title, 0, 0);
-            table.SetColumnSpan(title, 4);
+            title.TextAlign = ContentAlignment.MiddleLeft;
+            frame.Controls.Add(title, 0, 0);
+            System.Windows.Forms.Panel body = NewIndependentScrollRegion();
+            profileRuntimeScroll = body;
+            TableLayoutPanel table = new TableLayoutPanel();
+            table.Dock = DockStyle.Top;
+            table.AutoSize = true;
+            table.ColumnCount = 4;
+            table.RowCount = 10;
+            table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90F));
+            table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+            table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90F));
+            table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+            for (int i = 0; i < 10; i++) table.RowStyles.Add(new RowStyle(SizeType.Absolute, 48F));
+            table.RowStyles[8].Height = 112F;
 
             cmbTuningPreset = MakeSelect(160);
             cmbTuningPreset.Items.AddRange(new object[] { "快速", "均衡", "极限" });
             Label tuningLabel = MakeMutedLabel("自适应", 8.5F);
             tuningLabel.Dock = DockStyle.Fill;
             tuningLabel.TextAlign = ContentAlignment.MiddleLeft;
-            table.Controls.Add(tuningLabel, 0, 1);
+            table.Controls.Add(tuningLabel, 0, 0);
             cmbTuningPreset.Dock = DockStyle.Fill;
-            table.Controls.Add(cmbTuningPreset, 1, 1);
-            btnAutoTune = MakeButton("检测并生成方案", 170, AntdUI.TTypeMini.Primary, AutoTuneClicked);
+            table.Controls.Add(cmbTuningPreset, 1, 0);
+            btnAutoTune = MakeButton("检测并生成方案", 170, AntdUI.TTypeMini.Default, AutoTuneClicked);
             btnAutoTune.Dock = DockStyle.Fill;
             btnAutoTune.Margin = new Padding(6, 7, 0, 7);
-            table.Controls.Add(btnAutoTune, 2, 1);
+            table.Controls.Add(btnAutoTune, 2, 0);
             table.SetColumnSpan(btnAutoTune, 2);
             WireSettingControl(cmbTuningPreset);
             configurationControls.Add(cmbTuningPreset);
 
             txtHost = MakeInput("127.0.0.1 或 0.0.0.0");
             txtAdvertisedHost = MakeInput("客户端访问的 IP/主机名");
-            AddPair(table, 2, "监听地址", txtHost, "公开地址", txtAdvertisedHost);
+            AddPair(table, 1, "监听地址", txtHost, "公开地址", txtAdvertisedHost);
 
             numPort = MakeNumber(1, 65535, 8080);
             numContext = MakeNumber(0, 1048576, 8192);
-            AddPair(table, 3, "端口", numPort, "上下文", numContext);
+            AddPair(table, 2, "端口", numPort, "上下文", numContext);
 
             numParallel = MakeNumber(1, 128, 1);
             txtGpuLayers = MakeInput("auto、-1 或层数");
-            AddPair(table, 4, "并发数", numParallel, "GPU 层", txtGpuLayers);
+            AddPair(table, 3, "并发数", numParallel, "GPU 层", txtGpuLayers);
 
             cmbCacheK = MakeSelect(160);
             AddCacheOptions(cmbCacheK);
             cmbCacheV = MakeSelect(160);
             AddCacheOptions(cmbCacheV);
-            AddPair(table, 5, "KV Cache K", cmbCacheK, "KV Cache V", cmbCacheV);
+            AddPair(table, 4, "KV Cache K", cmbCacheK, "KV Cache V", cmbCacheV);
 
             numFitTarget = MakeNumber(0, 1048576, 1024);
             numImageTokens = MakeNumber(0, 1048576, 0);
-            AddPair(table, 6, "Fit 余量 MB", numFitTarget, "图片 tokens", numImageTokens);
+            AddPair(table, 5, "Fit 余量 MB", numFitTarget, "图片 tokens", numImageTokens);
 
             numThreads = MakeNumber(0, 512, 0);
             numBatch = MakeNumber(1, 65536, 2048);
-            AddPair(table, 7, "CPU 线程", numThreads, "Batch", numBatch);
+            AddPair(table, 6, "CPU 线程", numThreads, "Batch", numBatch);
 
             numUbatch = MakeNumber(1, 65536, 512);
             cmbReasoning = MakeSelect(150);
             cmbReasoning.Items.AddRange(new object[] { "默认", "none", "auto", "deepseek", "deepseek-legacy" });
-            AddPair(table, 8, "Ubatch", numUbatch, "推理解析", cmbReasoning);
+            AddPair(table, 7, "Ubatch", numUbatch, "推理解析", cmbReasoning);
 
             FlowLayoutPanel switches = new FlowLayoutPanel();
             switches.Dock = DockStyle.Fill;
@@ -657,27 +1264,31 @@ namespace LlamaServerManager
             swNoWebUi = MakeSwitch(string.Empty);
             swNoMmap = MakeSwitch(string.Empty);
             swMlock = MakeSwitch(string.Empty);
+            swMetrics = MakeSwitch(string.Empty);
             switches.Controls.Add(MakeSwitchItem("自动 Fit", swFit));
             switches.Controls.Add(MakeSwitchItem("Flash Attention", swFlash));
             switches.Controls.Add(MakeSwitchItem("Jinja 工具调用", swJinja));
             switches.Controls.Add(MakeSwitchItem("禁用 WebUI", swNoWebUi));
             switches.Controls.Add(MakeSwitchItem("No mmap", swNoMmap));
             switches.Controls.Add(MakeSwitchItem("Mlock", swMlock));
-            configurationControls.AddRange(new Control[] { swFit, swFlash, swJinja, swNoWebUi, swNoMmap, swMlock });
-            table.Controls.Add(switches, 0, 9);
+            switches.Controls.Add(MakeSwitchItem("性能指标", swMetrics));
+            configurationControls.AddRange(new Control[] { swFit, swFlash, swJinja, swNoWebUi, swNoMmap, swMlock, swMetrics });
+            table.Controls.Add(switches, 0, 8);
             table.SetColumnSpan(switches, 4);
 
             txtExtraArgs = MakeInput("其余 llama-server 参数（高级）");
             Label extraLabel = MakeMutedLabel("自定义参数", 8.5F);
             extraLabel.Dock = DockStyle.Fill;
             extraLabel.TextAlign = ContentAlignment.MiddleLeft;
-            table.Controls.Add(extraLabel, 0, 10);
-            table.Controls.Add(txtExtraArgs, 1, 10);
+            table.Controls.Add(extraLabel, 0, 9);
+            table.Controls.Add(txtExtraArgs, 1, 9);
             table.SetColumnSpan(txtExtraArgs, 3);
             WireSettingControl(txtExtraArgs);
             configurationControls.Add(txtExtraArgs);
 
-            card.Controls.Add(table);
+            body.Controls.Add(table);
+            frame.Controls.Add(body, 0, 1);
+            card.Controls.Add(frame);
             return card;
         }
 
@@ -689,7 +1300,7 @@ namespace LlamaServerManager
             page.RowStyles.Add(new RowStyle(SizeType.Absolute, 162F));
             page.RowStyles.Add(new RowStyle(SizeType.Absolute, 260F));
             page.RowStyles.Add(new RowStyle(SizeType.Absolute, 210F));
-            page.AutoScrollMinSize = new Size(720, 676);
+            page.AutoScrollMinSize = new Size(0, 676);
 
             APanel hardwareCard = NewCard();
             hardwareCard.Margin = new Padding(0, 0, 0, 14);
@@ -705,7 +1316,7 @@ namespace LlamaServerManager
             Label hardwareTitle = MakeLabel("本机运行能力", 14F, FontStyle.Bold);
             hardwareTitle.Dock = DockStyle.Fill;
             hardwareLayout.Controls.Add(hardwareTitle, 0, 0);
-            btnRefreshRuntimes = MakeButton("检测并刷新版本", 142, AntdUI.TTypeMini.Primary, RefreshRuntimesClicked);
+            btnRefreshRuntimes = MakeButton("检测并刷新版本", 142, AntdUI.TTypeMini.Default, RefreshRuntimesClicked);
             btnRefreshRuntimes.Dock = DockStyle.Fill;
             hardwareLayout.Controls.Add(btnRefreshRuntimes, 1, 0);
             lblHardwareSummary = MakeMutedLabel("尚未检测。点击右上角后，软件会识别 CPU、内存、GPU，并从 llama.cpp 官方仓库读取可用版本。", 9F);
@@ -784,7 +1395,7 @@ namespace LlamaServerManager
             cmbInstalledRuntime = MakeSelect(480);
             cmbInstalledRuntime.Dock = DockStyle.Fill;
             installedLayout.Controls.Add(cmbInstalledRuntime, 0, 1);
-            btnUseRuntime = MakeButton("用于当前配置", 134, AntdUI.TTypeMini.Primary, UseRuntimeClicked);
+            btnUseRuntime = MakeButton("用于当前配置", 134, AntdUI.TTypeMini.Default, UseRuntimeClicked);
             btnUseRuntime.Dock = DockStyle.Fill;
             installedLayout.Controls.Add(btnUseRuntime, 1, 1);
             AButton openRuntime = MakeButton("打开目录", 112, AntdUI.TTypeMini.Default, OpenRuntimeDirectoryClicked);
@@ -805,30 +1416,31 @@ namespace LlamaServerManager
         private Control BuildLogsPage()
         {
             TableLayoutPanel page = NewPage();
+            page.AutoScroll = false;
             page.Padding = new Padding(22);
-            page.RowCount = 2;
-            page.RowStyles.Add(new RowStyle(SizeType.Absolute, 54F));
+            page.RowCount = 1;
             page.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-            page.AutoScrollMinSize = new Size(640, 560);
-
-            FlowLayoutPanel tools = new FlowLayoutPanel();
-            tools.Dock = DockStyle.Fill;
-            tools.FlowDirection = FlowDirection.RightToLeft;
-            tools.WrapContents = false;
-            tools.Tag = "surface";
-            tools.Controls.Add(MakeButton("打开日志目录", 120, AntdUI.TTypeMini.Default, OpenLogDirectoryClicked));
-            tools.Controls.Add(MakeButton("清空显示", 94, AntdUI.TTypeMini.Default, delegate { txtLogs.Clear(); txtDashboardLog.Clear(); }));
-            Label title = MakeLabel("运行日志", 15F, FontStyle.Bold);
-            title.Dock = DockStyle.Left;
-            title.Width = 180;
-            tools.Controls.Add(title);
-            page.Controls.Add(tools, 0, 0);
-
             APanel card = NewCard();
             card.Padding = new Padding(14);
+            TableLayoutPanel consoleLayout = new TableLayoutPanel();
+            consoleLayout.Dock = DockStyle.Fill;
+            consoleLayout.ColumnCount = 1;
+            consoleLayout.RowCount = 2;
+            consoleLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 50F));
+            consoleLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+
+            FlowLayoutPanel header = new FlowLayoutPanel();
+            header.Dock = DockStyle.Fill;
+            header.FlowDirection = FlowDirection.RightToLeft;
+            header.WrapContents = false;
+            header.Padding = new Padding(0, 7, 0, 7);
+            header.Controls.Add(MakeButton("打开日志目录", 112, AntdUI.TTypeMini.Default, OpenLogDirectoryClicked));
+            header.Controls.Add(MakeButton("清空显示", 88, AntdUI.TTypeMini.Default, delegate { txtLogs.Clear(); txtDashboardLog.Clear(); }));
+            consoleLayout.Controls.Add(header, 0, 0);
             txtLogs = MakeLogBox();
-            card.Controls.Add(txtLogs);
-            page.Controls.Add(card, 0, 1);
+            consoleLayout.Controls.Add(txtLogs, 0, 1);
+            card.Controls.Add(consoleLayout);
+            page.Controls.Add(card, 0, 0);
             return page;
         }
 
@@ -836,11 +1448,12 @@ namespace LlamaServerManager
         {
             TableLayoutPanel page = NewPage();
             page.Padding = new Padding(22);
-            page.RowCount = 3;
+            page.RowCount = 4;
             page.RowStyles.Add(new RowStyle(SizeType.Absolute, 270F));
+            page.RowStyles.Add(new RowStyle(SizeType.Absolute, 170F));
             page.RowStyles.Add(new RowStyle(SizeType.Absolute, 200F));
             page.RowStyles.Add(new RowStyle(SizeType.Absolute, 190F));
-            page.AutoScrollMinSize = new Size(640, 704);
+            page.AutoScrollMinSize = new Size(0, 874);
 
             APanel appearance = NewCard();
             appearance.Margin = new Padding(0, 0, 0, 14);
@@ -864,19 +1477,48 @@ namespace LlamaServerManager
             settingsTheme.SelectedIndex = ThemeIndex(config.ThemeMode);
             settingsTheme.SelectedIndexChanged += delegate { if (settingsTheme.SelectedIndex >= 0) { cmbTheme.SelectedIndex = settingsTheme.SelectedIndex; QuickThemeChanged(); } };
             AddSettingRow(app, 1, "主题模式", settingsTheme);
-            FlowLayoutPanel accentButtons = new FlowLayoutPanel();
-            accentButtons.Dock = DockStyle.Fill;
-            accentButtons.Tag = "surface";
+            FlowLayoutPanel accentChoices = new FlowLayoutPanel();
+            accentChoices.Dock = DockStyle.Fill;
+            accentChoices.Tag = "surface";
             string[] accents = ThemeService.AccentNames;
             for (int i = 0; i < accents.Length; i++)
             {
                 string captured = accents[i];
                 AButton button = MakeButton(AccentDisplayName(captured), 84, AntdUI.TTypeMini.Default, delegate { config.AccentName = captured; ApplyTheme(); ConfigStore.Save(config); });
-                accentButtons.Controls.Add(button);
+                accentChoiceButtons[button] = captured;
+                accentChoices.Controls.Add(button);
             }
-            AddSettingRow(app, 2, "强调色", accentButtons);
+            AddSettingRow(app, 2, "强调色", accentChoices);
             appearance.Controls.Add(app);
             page.Controls.Add(appearance, 0, 0);
+
+            APanel apiKeys = NewCard();
+            apiKeys.Margin = new Padding(0, 0, 0, 14);
+            apiKeys.Padding = new Padding(20);
+            TableLayoutPanel apiKeyLayout = new TableLayoutPanel();
+            apiKeyLayout.Dock = DockStyle.Fill;
+            apiKeyLayout.ColumnCount = 2;
+            apiKeyLayout.RowCount = 2;
+            apiKeyLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            apiKeyLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 154F));
+            apiKeyLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42F));
+            apiKeyLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            Label apiKeyTitle = MakeLabel("API Key 管理", 14F, FontStyle.Bold);
+            apiKeyTitle.Dock = DockStyle.Fill;
+            apiKeyTitle.TextAlign = ContentAlignment.MiddleLeft;
+            apiKeyLayout.Controls.Add(apiKeyTitle, 0, 0);
+            apiKeyLayout.SetColumnSpan(apiKeyTitle, 2);
+            Label apiKeyBody = MakeMutedLabel("集中创建、生成、导入和删除 llama.cpp 鉴权密钥。列表只显示脱敏摘要，选择后可直接用于当前模型配置。", 9F);
+            apiKeyBody.Dock = DockStyle.Fill;
+            apiKeyBody.AutoSize = false;
+            apiKeyBody.TextAlign = ContentAlignment.MiddleLeft;
+            apiKeyLayout.Controls.Add(apiKeyBody, 0, 1);
+            AButton manageApiKeys = MakeButton("管理 API Key", 138, AntdUI.TTypeMini.Default, delegate { OpenApiKeyManager(); });
+            manageApiKeys.Dock = DockStyle.Fill;
+            manageApiKeys.Margin = new Padding(12, 12, 0, 12);
+            apiKeyLayout.Controls.Add(manageApiKeys, 1, 1);
+            apiKeys.Controls.Add(apiKeyLayout);
+            page.Controls.Add(apiKeys, 0, 1);
 
             APanel storage = NewCard();
             storage.Margin = new Padding(0, 0, 0, 14);
@@ -898,7 +1540,7 @@ namespace LlamaServerManager
             AddSettingText(storageLayout, 1, "运行模式", ConfigStore.IsPortable ? "便携版 · 配置保存在程序旁的 data 目录" : "安装版 · 配置保存在当前 Windows 用户目录");
             AddSettingText(storageLayout, 2, "配置目录", ConfigStore.DataDirectory);
             storage.Controls.Add(storageLayout);
-            page.Controls.Add(storage, 0, 1);
+            page.Controls.Add(storage, 0, 2);
 
             APanel about = NewCard();
             about.Padding = new Padding(20);
@@ -908,17 +1550,17 @@ namespace LlamaServerManager
             aboutLayout.RowCount = 2;
             aboutLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42F));
             aboutLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-            Label aboutTitle = MakeLabel("Llama Server Manager  " + AppVersion.DisplayVersion, 14F, FontStyle.Bold);
+            Label aboutTitle = MakeLabel("LlamaLift  " + AppVersion.DisplayVersion, 14F, FontStyle.Bold);
             aboutTitle.Dock = DockStyle.Fill;
             aboutTitle.TextAlign = ContentAlignment.MiddleLeft;
-            Label aboutBody = MakeMutedLabel("通用 Windows llama.cpp 服务管理器。可从 ggml-org/llama.cpp 官方 Release 安装运行时，也支持手工选择已有 llama-server.exe。软件不捆绑模型文件或用户密钥。\n界面基于 AntdUI（Apache-2.0）；安装包由 Inno Setup 构建。", 9.5F);
+            Label aboutBody = MakeMutedLabel("本地模型，一键起飞。LlamaLift 可安装 llama.cpp 运行时、自适应本机参数、管理模型服务与 API Key，并实时观察系统和推理性能。软件不捆绑模型文件或用户密钥。\n界面基于 AntdUI（Apache-2.0）；安装包由 Inno Setup 构建。", 9.5F);
             aboutBody.Dock = DockStyle.Fill;
             aboutBody.AutoSize = false;
             aboutBody.TextAlign = ContentAlignment.TopLeft;
             aboutLayout.Controls.Add(aboutTitle, 0, 0);
             aboutLayout.Controls.Add(aboutBody, 0, 1);
             about.Controls.Add(aboutLayout);
-            page.Controls.Add(about, 0, 2);
+            page.Controls.Add(about, 0, 3);
             return page;
         }
 
@@ -927,7 +1569,7 @@ namespace LlamaServerManager
             TableLayoutPanel page = new TableLayoutPanel();
             page.Dock = DockStyle.Fill;
             page.AutoScroll = true;
-            page.Tag = "surface";
+            page.Tag = "background";
             page.ColumnCount = 1;
             page.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
             return page;
@@ -937,9 +1579,9 @@ namespace LlamaServerManager
         {
             APanel card = new APanel();
             card.Dock = DockStyle.Fill;
-            card.Radius = 12;
+            card.Radius = 16;
             card.BorderWidth = 1F;
-            card.Shadow = 1;
+            card.Shadow = 0;
             card.Tag = "surface";
             return card;
         }
@@ -961,12 +1603,22 @@ namespace LlamaServerManager
                 if (item.Key == key) item.Value.BringToFront();
             }
             foreach (KeyValuePair<string, AButton> item in navButtons)
-                item.Value.Type = item.Key == key ? AntdUI.TTypeMini.Primary : AntdUI.TTypeMini.Default;
+                StyleNavigationButton(item.Value, item.Key == key);
 
-            if (key == "profiles")
+            if (key == "monitoring")
+            {
+                lblHeaderTitle.Text = "性能监测";
+                lblHeaderSubtitle.Text = "实时查看系统资源与本地大模型推理状态";
+            }
+            else if (key == "profiles")
             {
                 lblHeaderTitle.Text = "模型配置";
-                lblHeaderSubtitle.Text = "配置任意 Windows llama.cpp 后端、模型和启动参数";
+                lblHeaderSubtitle.Text = "用简易表单配置后端、模型和常用参数";
+            }
+            else if (key == "parameters")
+            {
+                lblHeaderTitle.Text = "参数工作台";
+                lblHeaderSubtitle.Text = "编辑完整命令、反向识别字段，并管理可复用的参数预设";
             }
             else if (key == "runtimes")
             {
@@ -986,19 +1638,39 @@ namespace LlamaServerManager
             else
             {
                 lblHeaderTitle.Text = "服务总览";
-                lblHeaderSubtitle.Text = "管理 llama.cpp 后端、模型和 API";
+                lblHeaderSubtitle.Text = "让本地模型从安装、调优到服务一步起飞";
             }
         }
 
-        private AButton MakeNavButton(string key, string textValue, string glyph)
+        private AButton MakeNavButton(string key, string textValue)
         {
-            AButton button = MakeButton(glyph + "   " + textValue, 184, AntdUI.TTypeMini.Default, delegate { Navigate(key); });
+            AButton button = MakeButton(textValue, 0, AntdUI.TTypeMini.Default, delegate { Navigate(key); });
+            button.AutoSize = false;
+            button.MinimumSize = Size.Empty;
+            button.MaximumSize = Size.Empty;
             button.Dock = DockStyle.Fill;
-            button.Margin = new Padding(0, 5, 0, 5);
+            // AntdUI's drawable bounds extend slightly past a dock-filled TableLayout cell.
+            // Reserve a right safe area so the rounded edge is never clipped at any DPI.
+            button.Margin = new Padding(0, 4, 22, 4);
             button.TextAlign = ContentAlignment.MiddleLeft;
-            button.Padding = new Padding(14, 0, 0, 0);
+            button.Padding = new Padding(16, 0, 0, 0);
+            button.Radius = 10;
             navButtons[key] = button;
             return button;
+        }
+
+        private void StyleNavigationButton(AButton button, bool selected)
+        {
+            button.Type = AntdUI.TTypeMini.Default;
+            if (palette == null) return;
+            button.DefaultBack = selected ? palette.SidebarSelected : palette.Sidebar;
+            button.DefaultBorderColor = selected ? palette.SidebarSelected : palette.Sidebar;
+            button.ForeColor = palette.Text;
+            button.ForeHover = palette.Text;
+            button.ForeActive = palette.Text;
+            button.BackHover = palette.SidebarHover;
+            button.BackActive = palette.SidebarSelected;
+            button.Font = new Font("Microsoft YaHei UI", 9F, selected ? FontStyle.Bold : FontStyle.Regular, GraphicsUnit.Point);
         }
 
         private Label AddMetricCard(TableLayoutPanel parent, int column, string title, string value, string hint)
@@ -1007,16 +1679,19 @@ namespace LlamaServerManager
             card.Margin = new Padding(column == 0 ? 0 : 7, 0, column == 3 ? 0 : 7, 0);
             System.Windows.Forms.Panel content = new System.Windows.Forms.Panel();
             content.Dock = DockStyle.Fill;
-            content.Tag = "surface";
             Label caption = MakeMutedLabel(title.ToUpperInvariant(), 8.5F);
             caption.Location = new Point(18, 14);
             caption.AutoSize = true;
             Label metric = MakeLabel(value, 16F, FontStyle.Bold);
+            metric.Font = new Font("Segoe UI", 16F, FontStyle.Bold, GraphicsUnit.Point);
             metric.Location = new Point(17, 40);
             metric.AutoSize = true;
             Label description = MakeMutedLabel(hint, 8.5F);
-            description.Location = new Point(18, 72);
-            description.AutoSize = true;
+            description.Dock = DockStyle.Bottom;
+            description.Height = 34;
+            description.Padding = new Padding(18, 0, 8, 0);
+            description.AutoSize = false;
+            description.TextAlign = ContentAlignment.TopLeft;
             content.Controls.Add(caption);
             content.Controls.Add(metric);
             content.Controls.Add(description);
@@ -1045,9 +1720,9 @@ namespace LlamaServerManager
         {
             AButton button = new AButton();
             button.Text = value;
-            button.Width = width;
-            button.Height = 34;
-            button.Radius = 7;
+            if (width > 0) button.Width = width;
+            button.Height = 38;
+            button.Radius = 10;
             button.Type = type;
             button.BorderWidth = 1F;
             button.AutoEllipsis = true;
@@ -1060,7 +1735,8 @@ namespace LlamaServerManager
         {
             AInput input = new AInput();
             input.PlaceholderText = placeholder;
-            input.Radius = 6;
+            input.Radius = 10;
+            input.Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
             input.Margin = new Padding(2, 5, 2, 5);
             input.Dock = DockStyle.Fill;
             return input;
@@ -1070,8 +1746,8 @@ namespace LlamaServerManager
         {
             ASelect select = new ASelect();
             select.Width = width;
-            select.Height = 34;
-            select.Radius = 6;
+            select.Height = 38;
+            select.Radius = 10;
             select.Margin = new Padding(4, 0, 4, 0);
             return select;
         }
@@ -1082,7 +1758,7 @@ namespace LlamaServerManager
             number.Minimum = min;
             number.Maximum = max;
             number.Value = value;
-            number.Radius = 6;
+            number.Radius = 10;
             number.Dock = DockStyle.Fill;
             number.Margin = new Padding(2, 5, 2, 5);
             return number;
@@ -1125,13 +1801,36 @@ namespace LlamaServerManager
             log.Dock = DockStyle.Fill;
             log.ReadOnly = true;
             log.BorderStyle = BorderStyle.None;
-            log.Font = new Font("Cascadia Mono", 9F, FontStyle.Regular, GraphicsUnit.Point);
+            log.Font = MakeMonospaceFont(9F);
             log.DetectUrls = false;
-            log.WordWrap = false;
+            log.WordWrap = true;
+            log.ScrollBars = RichTextBoxScrollBars.Vertical;
             return log;
         }
 
+        private static Font MakeMonospaceFont(float size)
+        {
+            return new Font(MonospaceFontFamily, size, FontStyle.Regular, GraphicsUnit.Point);
+        }
+
+        private static string ResolveMonospaceFontFamily()
+        {
+            using (InstalledFontCollection fonts = new InstalledFontCollection())
+            {
+                string[] preferred = new string[] { "Cascadia Mono", "Cascadia Code", "Consolas" };
+                foreach (string candidate in preferred)
+                    foreach (FontFamily family in fonts.Families)
+                        if (string.Equals(family.Name, candidate, StringComparison.OrdinalIgnoreCase)) return family.Name;
+            }
+            return FontFamily.GenericMonospace.Name;
+        }
+
         private AInput AddInputRow(TableLayoutPanel table, int row, string label, string placeholder, EventHandler browse)
+        {
+            return AddInputRow(table, row, label, placeholder, browse, "…");
+        }
+
+        private AInput AddInputRow(TableLayoutPanel table, int row, string label, string placeholder, EventHandler browse, string actionText)
         {
             Label caption = MakeMutedLabel(label, 9F);
             caption.Dock = DockStyle.Fill;
@@ -1142,7 +1841,7 @@ namespace LlamaServerManager
             table.Controls.Add(input, 1, row);
             if (browse != null)
             {
-                AButton button = MakeButton("…", 34, AntdUI.TTypeMini.Default, browse);
+                AButton button = MakeButton(string.IsNullOrWhiteSpace(actionText) ? "…" : actionText, 34, AntdUI.TTypeMini.Default, browse);
                 button.Dock = DockStyle.Fill;
                 button.Margin = new Padding(6, 7, 0, 7);
                 table.Controls.Add(button, 2, row);
@@ -1211,6 +1910,208 @@ namespace LlamaServerManager
             select.Items.AddRange(new object[] { "f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl" });
         }
 
+        private void BindParameterPresets()
+        {
+            if (cmbParameterPreset == null) return;
+            bindingPresets = true;
+            try
+            {
+                cmbParameterPreset.Items.Clear();
+                int selected = 0;
+                for (int i = 0; i < config.ParameterPresets.Count; i++)
+                {
+                    cmbParameterPreset.Items.Add(config.ParameterPresets[i]);
+                    if (config.ParameterPresets[i].Id == config.SelectedParameterPresetId) selected = i;
+                }
+                if (cmbParameterPreset.Items.Count > 0) cmbParameterPreset.SelectedIndex = selected;
+            }
+            finally { bindingPresets = false; }
+            UpdateParameterPresetSummary();
+        }
+
+        private ParameterPreset SelectedParameterPreset()
+        {
+            if (cmbParameterPreset == null) return null;
+            int index = cmbParameterPreset.SelectedIndex;
+            return index >= 0 && index < config.ParameterPresets.Count ? config.ParameterPresets[index] : null;
+        }
+
+        private void ParameterPresetSelectedIndexChanged(object sender, EventArgs e)
+        {
+            if (bindingPresets) return;
+            ParameterPreset preset = SelectedParameterPreset();
+            if (preset == null) return;
+            config.SelectedParameterPresetId = preset.Id;
+            ConfigStore.Save(config);
+            UpdateParameterPresetSummary();
+        }
+
+        private void UpdateParameterPresetSummary()
+        {
+            if (lblPresetSummary == null) return;
+            ParameterPreset preset = SelectedParameterPreset();
+            if (preset == null)
+            {
+                lblPresetSummary.Text = "请选择一个参数预设。";
+                return;
+            }
+            lblPresetSummary.Text = preset.Name + "  ·  上下文 " + preset.ContextSize + "  ·  并发 " + preset.Parallel +
+                "  ·  GPU 层 " + preset.GpuLayers + "  ·  KV " + preset.CacheTypeK + "/" + preset.CacheTypeV +
+                "\r\n只保存性能与高级参数，不会替换模型路径、程序路径、端口或监听地址。";
+        }
+
+        private void ApplyParameterPresetClicked(object sender, EventArgs e)
+        {
+            if (currentProfile == null) return;
+            if (commandEditorDirty)
+            {
+                SetCommandParseSummary("命令编辑器还有未同步修改。请先解析同步，或从简易表单重新生成后再应用预设。", true);
+                return;
+            }
+            ParameterPreset preset = SelectedParameterPreset();
+            if (preset == null) return;
+            preset.ApplyTo(currentProfile);
+            commandEditorDirty = false;
+            LoadProfileToControls(currentProfile);
+            ConfigStore.Save(config);
+            SetCommandParseSummary("已应用“" + preset.Name + "”并同步到简易表单。模型路径、监听地址和端口保持不变。", false);
+            AppendLog("已应用参数预设：" + preset.Name, false);
+        }
+
+        private void SaveParameterPresetClicked(object sender, EventArgs e)
+        {
+            if (currentProfile == null) return;
+            if (commandEditorDirty)
+            {
+                SetCommandParseSummary("命令编辑器还有未同步修改。请先点击“解析并同步”，再保存预设。", true);
+                return;
+            }
+            ParameterPreset preset = SelectedParameterPreset();
+            if (preset == null) return;
+            UpdateProfileFromControls();
+            preset.Capture(currentProfile);
+            ConfigStore.Save(config);
+            UpdateParameterPresetSummary();
+            SetCommandParseSummary("当前性能与高级参数已保存到“" + preset.Name + "”。", false);
+        }
+
+        private void RenameParameterPresetClicked(object sender, EventArgs e)
+        {
+            ParameterPreset preset = SelectedParameterPreset();
+            if (preset == null) return;
+            string name = PromptDialogV2.Show(this, "预设名称", "重命名参数预设", preset.Name);
+            if (string.IsNullOrWhiteSpace(name)) return;
+            preset.Name = name.Trim();
+            config.SelectedParameterPresetId = preset.Id;
+            ConfigStore.Save(config);
+            BindParameterPresets();
+            SetCommandParseSummary("预设已重命名为“" + preset.Name + "”。", false);
+        }
+
+        private void CommandEditorTextChanged(object sender, EventArgs e)
+        {
+            if (loadingCommandEditor) return;
+            commandEditorDirty = true;
+            if (lblCommandEditorState != null)
+            {
+                lblCommandEditorState.Text = "有未同步修改";
+                if (palette != null) lblCommandEditorState.ForeColor = palette.Warning;
+            }
+            SetCommandParseSummary("命令已修改。点击“校验并保存”后会先检查风险，再同步简易填写处。", false);
+        }
+
+        private void GenerateCommandFromFormClicked(object sender, EventArgs e)
+        {
+            if (currentProfile == null) return;
+            UpdateProfileFromControls();
+            currentProfile.UseCustomCommand = false;
+            currentProfile.CustomCommand = string.Empty;
+            currentProfile.LastCommandValidationSummary = string.Empty;
+            currentProfile.LastCommandValidatedAtUtc = string.Empty;
+            SetCommandEditorText(CommandBuilder.BuildDisplayCommand(currentProfile));
+            SetCommandParseSummary("已切换为简易表单生成模式，并重新生成启动命令。", false);
+        }
+
+        private void ParseCommandClicked(object sender, EventArgs e)
+        {
+            ValidateAndSaveCustomCommand();
+        }
+
+        private bool ValidateAndSaveCustomCommand()
+        {
+            if (currentProfile == null || txtCommandEditor == null) return false;
+            UpdateProfileFromControls();
+            string customCommand = txtCommandEditor.Text == null ? string.Empty : txtCommandEditor.Text.Trim();
+            CommandPreflightResult preflight = CommandPreflightValidator.Validate(customCommand, currentProfile, true);
+            bool needsReview = preflight.ErrorCount > 0 || preflight.WarningCount > 0;
+            if (needsReview)
+            {
+                DialogResult answer = MessageBox.Show(this,
+                    preflight.BuildReviewText(7) + "\n\n这些提示不会强制阻止保存。是否仍然保存并使用这段自定义命令？",
+                    "启动参数预检", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+                if (answer != DialogResult.Yes)
+                {
+                    string suggestion = FirstDiagnosticSuggestion(preflight);
+                    SetCommandParseSummary("尚未保存：" + preflight.StatusText + (string.IsNullOrWhiteSpace(suggestion) ? string.Empty : "。建议：" + suggestion), false, true);
+                    return false;
+                }
+            }
+
+            currentProfile.CopyCommandSettingsFrom(preflight.ParseResult.Profile);
+            currentProfile.UseCustomCommand = true;
+            currentProfile.CustomCommand = customCommand;
+            currentProfile.LastCommandValidationSummary = preflight.StatusText + "；错误风险 " + preflight.ErrorCount + "，提醒 " + preflight.WarningCount;
+            currentProfile.LastCommandValidatedAtUtc = DateTime.UtcNow.ToString("o");
+            commandEditorDirty = false;
+            LoadProfileToControls(currentProfile);
+            config.SelectedProfileId = currentProfile.Id;
+            ConfigStore.Save(config);
+            SetCommandEditorText(customCommand);
+
+            string summary = "已保存自定义命令：识别 " + preflight.ParseResult.RecognizedCount + " 项，原样保留未映射项 " +
+                preflight.ParseResult.UnknownCount + " 个。" + preflight.StatusText + "。";
+            string firstSuggestion = FirstDiagnosticSuggestion(preflight);
+            if (!string.IsNullOrWhiteSpace(firstSuggestion)) summary += " 建议：" + firstSuggestion;
+            SetCommandParseSummary(summary, false, needsReview);
+            AppendLog("启动命令已预检并保存：" + currentProfile.Name + " · " + preflight.StatusText, preflight.ErrorCount > 0);
+            UpdateDashboardSummary();
+            return true;
+        }
+
+        private static string FirstDiagnosticSuggestion(CommandPreflightResult result)
+        {
+            if (result == null) return string.Empty;
+            foreach (CommandDiagnosticIssue issue in result.Issues)
+                if (!string.IsNullOrWhiteSpace(issue.Suggestion)) return issue.Suggestion;
+            return string.Empty;
+        }
+
+        private void SetCommandEditorText(string value)
+        {
+            if (txtCommandEditor == null) return;
+            loadingCommandEditor = true;
+            try { txtCommandEditor.Text = value ?? string.Empty; }
+            finally { loadingCommandEditor = false; }
+            commandEditorDirty = false;
+            if (lblCommandEditorState != null)
+            {
+                lblCommandEditorState.Text = currentProfile != null && currentProfile.UseCustomCommand ? "已保存自定义命令" : "已与简易表单同步";
+                if (palette != null) lblCommandEditorState.ForeColor = palette.Success;
+            }
+        }
+
+        private void SetCommandParseSummary(string value, bool error)
+        {
+            SetCommandParseSummary(value, error, false);
+        }
+
+        private void SetCommandParseSummary(string value, bool error, bool warning)
+        {
+            if (lblCommandParseSummary == null) return;
+            lblCommandParseSummary.Text = value;
+            if (palette != null) lblCommandParseSummary.ForeColor = error ? palette.Danger : warning ? palette.Warning : palette.Muted;
+        }
+
         private void BindProfiles()
         {
             bindingProfiles = true;
@@ -1227,11 +2128,18 @@ namespace LlamaServerManager
             if (config.Profiles.Count > 0) currentProfile = config.Profiles[selected];
             if (currentProfile != null) LoadProfileToControls(currentProfile);
             RefreshInstalledRuntimeOptions();
+            BindParameterPresets();
         }
 
         private void ProfileSelectedIndexChanged(object sender, EventArgs e)
         {
             if (bindingProfiles) return;
+            if (commandEditorDirty)
+            {
+                DialogResult discard = MessageBox.Show(this, "参数工作台中还有未同步的修改。是否舍弃这些修改并切换配置？", "未同步的启动参数", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+                if (discard != DialogResult.Yes) { SelectCurrentProfileInCombo(); return; }
+                commandEditorDirty = false;
+            }
             if (processManager.IsRunning)
             {
                 MessageBox.Show(this, "服务器运行时不能切换配置，请先停止服务。", "配置正在使用", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -1262,6 +2170,7 @@ namespace LlamaServerManager
 
         private void LoadProfileToControls(ModelProfile profile)
         {
+            commandEditorDirty = false;
             loadingControls = true;
             try
             {
@@ -1290,6 +2199,7 @@ namespace LlamaServerManager
                 swNoWebUi.Checked = profile.DisableWebUi;
                 swNoMmap.Checked = profile.NoMmap;
                 swMlock.Checked = profile.Mlock;
+                swMetrics.Checked = profile.EnableMetrics;
                 SelectValue(cmbReasoning, string.IsNullOrWhiteSpace(profile.Reasoning) ? "默认" : profile.Reasoning, "默认");
                 txtExtraArgs.Text = profile.ExtraArguments;
                 SelectValue(cmbTuningPreset, AdaptiveTuner.DisplayPreset(profile.TuningPreset), "均衡");
@@ -1327,6 +2237,7 @@ namespace LlamaServerManager
             currentProfile.DisableWebUi = swNoWebUi.Checked;
             currentProfile.NoMmap = swNoMmap.Checked;
             currentProfile.Mlock = swMlock.Checked;
+            currentProfile.EnableMetrics = swMetrics.Checked;
             string reasoning = SelectText(cmbReasoning, "默认");
             currentProfile.Reasoning = reasoning == "默认" ? string.Empty : reasoning;
             currentProfile.ExtraArguments = txtExtraArgs.Text.Trim();
@@ -1337,6 +2248,14 @@ namespace LlamaServerManager
         private void SaveProfileClicked(object sender, EventArgs e)
         {
             if (currentProfile == null) return;
+            if (commandEditorDirty || currentProfile.UseCustomCommand)
+            {
+                if (!ValidateAndSaveCustomCommand())
+                {
+                    if (commandEditorDirty) Navigate("parameters");
+                    return;
+                }
+            }
             UpdateProfileFromControls();
             config.SelectedProfileId = currentProfile.Id;
             config.FirstRunCompleted = !string.IsNullOrWhiteSpace(currentProfile.ServerExecutable) && !string.IsNullOrWhiteSpace(currentProfile.ModelPath);
@@ -1731,6 +2650,194 @@ namespace LlamaServerManager
             finally { healthCheckBusy = false; }
         }
 
+        private async Task RefreshMonitoringAsync()
+        {
+            if (monitoringBusy || monitoringPaused || IsDisposed || currentProfile == null) return;
+            monitoringBusy = true;
+            try
+            {
+                int processId = processManager.ProcessId;
+                ModelProfile snapshot = currentProfile.Clone();
+                Task<SystemPerformanceSample> systemTask = Task.Factory.StartNew(delegate { return systemPerformanceMonitor.Sample(processId); });
+                Task<LlamaPerformanceSample> modelTask = Task.Factory.StartNew(delegate { return llamaMetricsClient.Sample(snapshot); });
+                await Task.WhenAll(systemTask, modelTask);
+                if (IsDisposed) return;
+                UpdateSystemMonitoring(systemTask.Result);
+                UpdateModelMonitoring(modelTask.Result, snapshot, processId);
+                lblMonitoringUpdated.Text = "最后更新 " + DateTime.Now.ToString("HH:mm:ss") + " · 悬停图表可查看历史采样点";
+            }
+            catch (Exception ex)
+            {
+                if (lblMonitoringUpdated != null) lblMonitoringUpdated.Text = "部分计数器暂不可用：" + TrimForLog(ex.Message, 120);
+            }
+            finally { monitoringBusy = false; }
+        }
+
+        private async void ToggleMonitoringClicked(object sender, EventArgs e)
+        {
+            monitoringPaused = !monitoringPaused;
+            btnPauseMonitoring.Text = monitoringPaused ? "继续监测" : "暂停监测";
+            lblMonitoringStatus.Text = monitoringPaused ? "PAUSED · 数据已冻结" : "LIVE · 1 秒刷新";
+            lblMonitoringStatus.ForeColor = monitoringPaused ? palette.Warning : palette.Success;
+            foreach (RealtimeMetricChart chart in MonitoringCharts()) chart.Paused = monitoringPaused;
+            if (!monitoringPaused) await RefreshMonitoringAsync();
+        }
+
+        private void UpdateSystemMonitoring(SystemPerformanceSample sample)
+        {
+            if (sample == null || lblSystemCpu == null) return;
+            double memoryPercent = sample.MemoryTotalBytes == 0 ? 0D : sample.MemoryUsedBytes * 100D / sample.MemoryTotalBytes;
+            lblSystemCpu.Text = FormatPercent(sample.CpuUsage);
+            lblSystemMemory.Text = FormatPercent(memoryPercent);
+            lblSystemGpu.Text = FormatPercent(sample.GpuUsage);
+            lblSystemVram.Text = FormatBytes(sample.GpuDedicatedBytes);
+            lblServerCpu.Text = processManager.IsRunning ? FormatPercent(sample.ProcessCpuUsage) : "未运行";
+            lblServerMemory.Text = processManager.IsRunning ? FormatBytes(sample.ProcessWorkingSetBytes) + " / " + FormatBytes(sample.ProcessPrivateBytes) : "未运行";
+            lblSystemDisk.Text = FormatRate(sample.DiskReadBytesPerSecond + sample.DiskWriteBytesPerSecond);
+            lblSystemNetwork.Text = FormatRate(sample.NetworkReceiveBytesPerSecond + sample.NetworkSendBytesPerSecond);
+
+            chartCpu.AddValue(sample.CpuUsage);
+            chartMemory.AddValue(memoryPercent);
+            chartGpu.AddValue(sample.GpuUsage);
+            chartServerMemory.AddValue(sample.ProcessWorkingSetBytes / 1073741824D);
+
+            string vramTotal = systemPerformanceMonitor.GpuMemoryTotalBytes > 0
+                ? FormatBytes(systemPerformanceMonitor.GpuMemoryTotalBytes)
+                : "驱动未公开总量";
+            lblSystemDetails.Text =
+                "CPU  " + systemPerformanceMonitor.CpuName + " · " + systemPerformanceMonitor.LogicalProcessors + " 逻辑处理器" +
+                (systemPerformanceMonitor.CpuMaxClockMhz > 0 ? " · 最高 " + systemPerformanceMonitor.CpuMaxClockMhz + " MHz" : string.Empty) + Environment.NewLine +
+                "GPU  " + systemPerformanceMonitor.GpuName + " · 独占显存 " + FormatBytes(sample.GpuDedicatedBytes) + " / " + vramTotal +
+                " · 共享显存 " + FormatBytes(sample.GpuSharedBytes) + " · 驱动 " + systemPerformanceMonitor.GpuDriverVersion + Environment.NewLine +
+                "llama-server  工作集 " + FormatBytes(sample.ProcessWorkingSetBytes) + " · 私有内存 " + FormatBytes(sample.ProcessPrivateBytes) +
+                " · GPU " + FormatPercent(sample.ProcessGpuUsage) + " · 进程显存 " + FormatBytes(sample.ProcessGpuDedicatedBytes) +
+                " · 线程 " + sample.ProcessThreads + " · 句柄 " + sample.ProcessHandles + Environment.NewLine +
+                "I/O  磁盘读 " + FormatRate(sample.DiskReadBytesPerSecond) + " · 写 " + FormatRate(sample.DiskWriteBytesPerSecond) +
+                " · 服务读 " + FormatRate(sample.ProcessReadBytesPerSecond) + " · 服务写 " + FormatRate(sample.ProcessWriteBytesPerSecond) +
+                " · 网络收 " + FormatRate(sample.NetworkReceiveBytesPerSecond) + " · 发 " + FormatRate(sample.NetworkSendBytesPerSecond);
+        }
+
+        private void UpdateModelMonitoring(LlamaPerformanceSample sample, ModelProfile profile, int processId)
+        {
+            if (sample == null || lblPromptSpeed == null) return;
+            double contextPercent = sample.ContextUsagePercent;
+            if (contextPercent <= 0D && sample.ContextHighWatermark > 0 && profile.ContextSize > 0)
+                contextPercent = Math.Min(100D, sample.ContextHighWatermark * 100D / profile.ContextSize);
+            lblPromptSpeed.Text = sample.ServerReachable ? FormatNumber(sample.PromptTokensPerSecond) + " tok/s" : "离线";
+            lblGenerationSpeed.Text = sample.ServerReachable ? FormatNumber(sample.GenerationTokensPerSecond) + " tok/s" : "离线";
+            lblActiveRequests.Text = sample.ServerReachable ? sample.RequestsProcessing.ToString() : "—";
+            lblDeferredRequests.Text = sample.ServerReachable ? sample.RequestsDeferred.ToString() : "—";
+            lblContextUsage.Text = sample.ServerReachable ? FormatPercent(contextPercent) : "—";
+            lblTokenTotals.Text = sample.MetricsAvailable ? FormatCompactNumber(sample.PromptTokensTotal + sample.GeneratedTokensTotal) : "待启用";
+            lblSlotUsage.Text = sample.SlotsAvailable ? sample.SlotsActive + " / " + sample.SlotsTotal : "不可用";
+            lblServerUptime.Text = processId > 0 ? FormatProcessUptime(processId) : "未托管";
+
+            chartPromptSpeed.AddValue(sample.PromptTokensPerSecond);
+            chartGenerationSpeed.AddValue(sample.GenerationTokensPerSecond);
+            chartRequests.AddValue(sample.RequestsProcessing);
+            chartContext.AddValue(contextPercent);
+
+            lblMonitoringStatus.Text = monitoringPaused ? "PAUSED · 数据已冻结" : (sample.ServerReachable ? "LIVE · 指标在线" : "LIVE · 等待服务");
+            lblMonitoringStatus.ForeColor = monitoringPaused ? palette.Warning : sample.ServerReachable ? palette.Success : palette.Muted;
+            if (sample.PromptTokensPerSecond > 0D)
+            {
+                lblPromptMetric.Text = FormatNumber(sample.PromptTokensPerSecond) + " tok/s";
+                lblPromptMetric.ForeColor = palette.Accent;
+            }
+            if (sample.GenerationTokensPerSecond > 0D)
+            {
+                lblGenerationMetric.Text = FormatNumber(sample.GenerationTokensPerSecond) + " tok/s";
+                lblGenerationMetric.ForeColor = palette.Accent;
+            }
+
+            bool metricsRequested = profile.UseCustomCommand
+                ? Regex.IsMatch(profile.CustomCommand ?? string.Empty, @"(?i)(?:^|\s)--metrics(?:\s|$|=)")
+                : profile.EnableMetrics;
+            string endpointHint = sample.MetricsAvailable ? "Prometheus 指标已启用" :
+                metricsRequested ? "当前服务未提供 /metrics，可能需要更新或重启 llama.cpp" : "在模型配置中开启“性能指标”并重启服务，可获得累计 tokens 与完整吞吐";
+            lblModelDetails.Text =
+                sample.Status + " · " + endpointHint + Environment.NewLine +
+                "吞吐  Prompt " + FormatNumber(sample.PromptTokensPerSecond) + " tok/s · Generation " + FormatNumber(sample.GenerationTokensPerSecond) +
+                " tok/s · Prompt 用时 " + FormatDurationSeconds(sample.PromptSecondsTotal) + " · Generation 用时 " + FormatDurationSeconds(sample.GeneratedSecondsTotal) + Environment.NewLine +
+                "请求  处理中 " + sample.RequestsProcessing + " · 排队 " + sample.RequestsDeferred + " · 槽位 " + sample.SlotsActive + "/" + sample.SlotsTotal +
+                " · 推测解码槽 " + sample.SlotsSpeculative + Environment.NewLine +
+                "上下文  当前 " + sample.ContextTokensUsed + " / " + sample.ContextTokensTotal + " tokens · 使用率 " + FormatPercent(contextPercent) +
+                " · 历史高水位 " + sample.ContextHighWatermark + " tokens · 累计 Prompt " + FormatCompactNumber(sample.PromptTokensTotal) +
+                " / Generation " + FormatCompactNumber(sample.GeneratedTokensTotal);
+        }
+
+        private IEnumerable<RealtimeMetricChart> MonitoringCharts()
+        {
+            RealtimeMetricChart[] values = new RealtimeMetricChart[] {
+                chartCpu, chartMemory, chartGpu, chartServerMemory,
+                chartPromptSpeed, chartGenerationSpeed, chartRequests, chartContext
+            };
+            foreach (RealtimeMetricChart chart in values) if (chart != null) yield return chart;
+        }
+
+        private static string FormatPercent(double value)
+        {
+            return Math.Max(0D, value).ToString("0.0") + "%";
+        }
+
+        private static string FormatNumber(double value)
+        {
+            if (value <= 0D) return "0.0";
+            return value >= 100D ? value.ToString("0") : value.ToString("0.0");
+        }
+
+        private static string FormatCompactNumber(double value)
+        {
+            if (value >= 1000000000D) return (value / 1000000000D).ToString("0.0") + "B";
+            if (value >= 1000000D) return (value / 1000000D).ToString("0.0") + "M";
+            if (value >= 1000D) return (value / 1000D).ToString("0.0") + "K";
+            return value.ToString("0");
+        }
+
+        private static string FormatBytes(double bytes)
+        {
+            if (bytes <= 0D) return "0 MB";
+            if (bytes >= 1073741824D) return (bytes / 1073741824D).ToString("0.00") + " GB";
+            if (bytes >= 1048576D) return (bytes / 1048576D).ToString("0") + " MB";
+            if (bytes >= 1024D) return (bytes / 1024D).ToString("0") + " KB";
+            return bytes.ToString("0") + " B";
+        }
+
+        private static string FormatUsedTotal(double used, double total)
+        {
+            if (total <= 0D) return FormatBytes(used);
+            if (total >= 1073741824D)
+                return (used / 1073741824D).ToString("0.0") + "/" + (total / 1073741824D).ToString("0.0") + " GB";
+            return FormatBytes(used) + " / " + FormatBytes(total);
+        }
+
+        private static string FormatRate(double bytesPerSecond)
+        {
+            return FormatBytes(bytesPerSecond) + "/s";
+        }
+
+        private static string FormatDurationSeconds(double seconds)
+        {
+            if (seconds <= 0D) return "0s";
+            TimeSpan value = TimeSpan.FromSeconds(seconds);
+            if (value.TotalHours >= 1D) return value.ToString(@"h\:mm\:ss");
+            if (value.TotalMinutes >= 1D) return value.ToString(@"m\:ss");
+            return value.TotalSeconds.ToString("0.0") + "s";
+        }
+
+        private static string FormatProcessUptime(int processId)
+        {
+            try
+            {
+                using (Process process = Process.GetProcessById(processId))
+                {
+                    TimeSpan uptime = DateTime.Now - process.StartTime;
+                    return uptime.TotalHours >= 1D ? uptime.ToString(@"h\:mm\:ss") : uptime.ToString(@"m\:ss");
+                }
+            }
+            catch { return "—"; }
+        }
+
         private void ProcessManagerLogReceived(string message, bool error)
         {
             if (IsDisposed) return;
@@ -1762,21 +2869,23 @@ namespace LlamaServerManager
         private void AppendLog(string message, bool error)
         {
             if (string.IsNullOrWhiteSpace(message)) return;
-            string line = "[" + DateTime.Now.ToString("HH:mm:ss") + "] " + message.TrimEnd() + Environment.NewLine;
-            AppendLogToBox(txtLogs, line, error);
-            AppendLogToBox(txtDashboardLog, line, error);
+            bool warning = !error && Regex.IsMatch(message, "警告|warning|注意|不足|重试", RegexOptions.IgnoreCase);
+            string level = error ? "ERROR" : warning ? "WARN " : "INFO ";
+            string line = "[" + DateTime.Now.ToString("HH:mm:ss") + "] [" + level + "] " + message.TrimEnd() + Environment.NewLine;
+            AppendLogToBox(txtLogs, line, error, warning);
+            AppendLogToBox(txtDashboardLog, line, error, warning);
             if (txtDashboardLog != null && txtDashboardLog.TextLength > 16000)
                 txtDashboardLog.Text = txtDashboardLog.Text.Substring(txtDashboardLog.TextLength - 12000);
             ParsePerformance(message);
             TryWriteLogFile(line);
         }
 
-        private void AppendLogToBox(RichTextBox box, string line, bool error)
+        private void AppendLogToBox(RichTextBox box, string line, bool error, bool warning)
         {
             if (box == null) return;
             box.SelectionStart = box.TextLength;
             box.SelectionLength = 0;
-            box.SelectionColor = error ? palette.Danger : palette.LogText;
+            box.SelectionColor = error ? palette.Danger : warning ? palette.Warning : palette.LogText;
             box.AppendText(line);
             box.SelectionColor = palette.LogText;
             box.ScrollToCaret();
@@ -1819,15 +2928,31 @@ namespace LlamaServerManager
         private void AnySettingChanged(object sender, EventArgs e)
         {
             if (loadingControls) return;
+            if (!commandEditorDirty && currentProfile != null && currentProfile.UseCustomCommand &&
+                !ReferenceEquals(sender, txtProfileName) && !ReferenceEquals(sender, txtAdvertisedHost))
+            {
+                currentProfile.UseCustomCommand = false;
+                currentProfile.CustomCommand = string.Empty;
+                currentProfile.LastCommandValidationSummary = string.Empty;
+                currentProfile.LastCommandValidatedAtUtc = string.Empty;
+                SetCommandParseSummary("简易表单已修改，当前配置已切换回表单生成模式。", false);
+            }
             UpdateCommandPreview();
             UpdateDashboardSummary();
+            if (commandEditorDirty && lblCommandEditorState != null)
+            {
+                lblCommandEditorState.Text = "编辑器与简易表单均有修改";
+                if (palette != null) lblCommandEditorState.ForeColor = palette.Warning;
+            }
         }
 
         private void UpdateCommandPreview()
         {
             if (txtCommand == null || currentProfile == null || loadingControls) return;
             UpdateProfileFromControls();
-            txtCommand.Text = CommandBuilder.BuildDisplayCommand(currentProfile);
+            string command = CommandBuilder.BuildDisplayCommand(currentProfile);
+            txtCommand.Text = command;
+            if (!commandEditorDirty) SetCommandEditorText(command);
         }
 
         private void UpdateDashboardSummary()
@@ -1866,6 +2991,23 @@ namespace LlamaServerManager
             palette = ThemeService.Apply(config, this);
             if (txtLogs != null) { txtLogs.BackColor = palette.LogBackground; txtLogs.ForeColor = palette.LogText; }
             if (txtDashboardLog != null) { txtDashboardLog.BackColor = palette.LogBackground; txtDashboardLog.ForeColor = palette.LogText; }
+            if (txtCommandEditor != null) { txtCommandEditor.BackColor = palette.LogBackground; txtCommandEditor.ForeColor = palette.LogText; }
+            foreach (RealtimeMetricChart chart in MonitoringCharts()) chart.ApplyPalette(palette);
+            foreach (KeyValuePair<AButton, string> choice in accentChoiceButtons)
+            {
+                bool selected = string.Equals(choice.Value, config.AccentName, StringComparison.OrdinalIgnoreCase);
+                choice.Key.Type = selected ? AntdUI.TTypeMini.Primary : AntdUI.TTypeMini.Default;
+                if (!selected)
+                {
+                    choice.Key.DefaultBack = palette.SurfaceAlt;
+                    choice.Key.DefaultBorderColor = palette.Border;
+                    choice.Key.ForeColor = palette.Text;
+                    choice.Key.BackHover = ThemeService.Mix(palette.SurfaceAlt, palette.Accent, 0.08F);
+                    choice.Key.BackActive = ThemeService.Mix(palette.SurfaceAlt, palette.Accent, 0.15F);
+                }
+            }
+            if (lblCommandEditorState != null) lblCommandEditorState.ForeColor = commandEditorDirty ? palette.Warning : palette.Success;
+            if (lblMonitoringStatus != null) lblMonitoringStatus.ForeColor = monitoringPaused ? palette.Warning : processManager.IsRunning ? palette.Success : palette.Muted;
             Navigate(currentPage);
             if (lblProcessMetric != null) lblProcessMetric.ForeColor = processManager.IsRunning ? palette.Success : palette.Muted;
             ConfigStore.Save(config);
@@ -1890,7 +3032,7 @@ namespace LlamaServerManager
         {
             trayIcon = new NotifyIcon();
             trayIcon.Icon = Icon ?? SystemIcons.Application;
-            trayIcon.Text = "Llama Server Manager " + AppVersion.DisplayVersion;
+            trayIcon.Text = "LlamaLift " + AppVersion.DisplayVersion;
             trayIcon.Visible = true;
             trayIcon.DoubleClick += delegate { ShowFromTray(); };
             ContextMenuStrip menu = new ContextMenuStrip();
@@ -1905,7 +3047,7 @@ namespace LlamaServerManager
                 if (WindowState == FormWindowState.Minimized)
                 {
                     Hide();
-                    trayIcon.ShowBalloonTip(1000, "Llama Server Manager", "程序仍在托盘运行。", ToolTipIcon.Info);
+                    trayIcon.ShowBalloonTip(1000, "LlamaLift", "本地模型服务仍在托盘运行。", ToolTipIcon.Info);
                 }
             };
         }
@@ -1919,6 +3061,23 @@ namespace LlamaServerManager
 
         private void MainFormClosing(object sender, FormClosingEventArgs e)
         {
+            if (e.CloseReason == CloseReason.UserClosing && commandEditorDirty)
+            {
+                DialogResult pending = MessageBox.Show(this,
+                    "参数工作台中还有未同步修改。\n\n选择“是”将先解析、同步并保存；选择“否”将舍弃这些修改。",
+                    "保存启动参数", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning);
+                if (pending == DialogResult.Cancel) { e.Cancel = true; return; }
+                if (pending == DialogResult.Yes)
+                {
+                    ParseCommandClicked(this, EventArgs.Empty);
+                    if (commandEditorDirty)
+                    {
+                        e.Cancel = true;
+                        Navigate("parameters");
+                        return;
+                    }
+                }
+            }
             if (!forceExit && e.CloseReason == CloseReason.UserClosing && processManager.IsRunning)
             {
                 DialogResult result = MessageBox.Show(this,
@@ -1931,7 +3090,9 @@ namespace LlamaServerManager
             if (currentProfile != null) UpdateProfileFromControls();
             ConfigStore.Save(config);
             if (healthTimer != null) healthTimer.Stop();
+            if (monitorTimer != null) monitorTimer.Stop();
             if (trayIcon != null) { trayIcon.Visible = false; trayIcon.Dispose(); }
+            systemPerformanceMonitor.Dispose();
             processManager.Dispose();
         }
 
@@ -1945,6 +3106,18 @@ namespace LlamaServerManager
                 try { if (File.Exists(target.Text)) dialog.InitialDirectory = Path.GetDirectoryName(target.Text); }
                 catch { }
                 if (dialog.ShowDialog(this) == DialogResult.OK) target.Text = dialog.FileName;
+            }
+        }
+
+        private void OpenApiKeyManager()
+        {
+            string current = txtApiKeyFile == null ? string.Empty : txtApiKeyFile.Text;
+            using (ApiKeyManagerDialog dialog = new ApiKeyManagerDialog(current, palette))
+            {
+                if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                if (txtApiKeyFile != null) txtApiKeyFile.Text = dialog.SelectedPath ?? string.Empty;
+                UpdateCommandPreview();
+                UpdateDashboardSummary();
             }
         }
 

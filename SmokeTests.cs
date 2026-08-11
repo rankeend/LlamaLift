@@ -22,6 +22,7 @@ namespace LlamaServerManager
             Check(generic.CacheTypeK == "f16" && generic.CacheTypeV == "f16", "generic KV cache favors compatibility");
             Check(generic.Parallel == 1, "generic single active request");
             Check(generic.BatchSize == 2048 && generic.UbatchSize == 512, "generic batch defaults match llama.cpp defaults");
+            Check(generic.EnableMetrics, "generic profile enables local performance metrics");
             Check(LlamaApiClient.LocalBaseUrl(generic) == "http://127.0.0.1:8080", "generic local probe URL");
             Check(LlamaApiClient.LanBaseUrl(generic) == "http://127.0.0.1:8080", "generic published URL");
 
@@ -42,9 +43,14 @@ namespace LlamaServerManager
             Check(arguments.Contains("--ctx-size \"32768\""), "custom context argument is emitted");
             Check(arguments.Contains("--cache-type-k \"q8_0\" --cache-type-v \"q8_0\""), "custom KV cache arguments are emitted");
             Check(arguments.Contains("--threads \"12\" --batch-size \"1024\" --ubatch-size \"256\""), "adaptive execution arguments are emitted");
+            Check(arguments.Contains("--metrics"), "llama.cpp Prometheus metrics are enabled by default");
             Check(command.Contains("\"C:\\Models\\Example Model.gguf\""), "model paths with spaces are quoted");
             Check(!command.Contains("C:\\\\Models"), "Windows path separators are not doubled");
             Check(LlamaApiClient.LanBaseUrl(profile) == "http://server.local:8080", "published URL uses advertised host");
+            CheckCommandEditing();
+            CheckCommandPreflight();
+            CheckApiKeyStore();
+            CheckParameterPresets();
             CheckNormalizationDefaults();
             CheckAdaptivePlans();
             CheckGgufMetadataReader();
@@ -57,6 +63,106 @@ namespace LlamaServerManager
             Console.WriteLine();
             Console.WriteLine(failures == 0 ? "ALL OFFLINE TESTS PASSED" : failures + " TEST(S) FAILED");
             Environment.ExitCode = failures == 0 ? 0 : 1;
+        }
+
+        private static void CheckCommandEditing()
+        {
+            ModelProfile baseline = ModelProfile.CreateGenericProfile();
+            baseline.ServerExecutable = @"C:\llama.cpp\llama-server.exe";
+            string edited = "\"C:\\llama.cpp\\llama-server.exe\" -m \"D:\\Models\\Qwen Test.gguf\" -c 32768 -ngl 60 " +
+                "--port=9090 --parallel 2 -ctk q8_0 -ctv q4_0 --fit off --flash-attn on --no-webui --metrics --rope-scaling yarn";
+            CommandParseResult parsed = CommandParser.Parse(edited, baseline);
+            Check(parsed.Success, "editable command accepts aliases, equals syntax, quotes and booleans");
+            Check(parsed.Profile.ModelPath == @"D:\Models\Qwen Test.gguf" && parsed.Profile.ContextSize == 32768, "editable command synchronizes model and context fields");
+            Check(parsed.Profile.Port == 9090 && parsed.Profile.Parallel == 2 && parsed.Profile.GpuLayers == "60", "editable command synchronizes network and acceleration fields");
+            Check(!parsed.Profile.FitEnabled && parsed.Profile.FlashAttention && parsed.Profile.DisableWebUi && parsed.Profile.EnableMetrics, "editable command synchronizes switches");
+            Check(parsed.Profile.ExtraArguments.Contains("--rope-scaling yarn") && parsed.UnknownCount == 2, "unknown command arguments are preserved");
+
+            CommandParseResult invalid = CommandParser.Parse("llama-server.exe --port 70000 --ctx-size nope", baseline);
+            Check(!invalid.Success && invalid.Errors.Count == 2, "invalid command values block synchronization with inline errors");
+
+            string roundTrip = CommandBuilder.BuildDisplayCommand(parsed.Profile);
+            CommandParseResult reparsed = CommandParser.Parse(roundTrip, baseline);
+            Check(reparsed.Success && reparsed.Profile.ContextSize == 32768 && reparsed.Profile.ExtraArguments.Contains("--rope-scaling"), "generated command round-trips through the parser");
+
+            parsed.Profile.UseCustomCommand = true;
+            parsed.Profile.CustomCommand = edited;
+            Check(CommandBuilder.BuildDisplayCommand(parsed.Profile) == edited, "saved custom command is preserved verbatim for display");
+            Check(CommandBuilder.BuildLaunchExecutable(parsed.Profile) == @"C:\llama.cpp\llama-server.exe", "custom command executable is split safely");
+            Check(CommandBuilder.BuildLaunchArguments(parsed.Profile).Contains("--port=9090"), "custom command arguments are used for launch");
+            parsed.Profile.CustomCommand += " --api-key super-secret-value";
+            Check(!CommandBuilder.BuildSafeDisplayCommand(parsed.Profile).Contains("super-secret-value"), "inline secrets are redacted from launch logs");
+        }
+
+        private static void CheckCommandPreflight()
+        {
+            ModelProfile baseline = ModelProfile.CreateGenericProfile();
+            baseline.ServerExecutable = @"C:\llama.cpp\llama-server.exe";
+            baseline.ModelPath = @"D:\Models\Qwen.gguf";
+            CommandPreflightResult valid = CommandPreflightValidator.Validate(
+                "\"C:\\llama.cpp\\llama-server.exe\" --model \"D:\\Models\\Qwen.gguf\" --port 8080 --ctx-size 32768 --parallel 1 --n-gpu-layers auto --cache-type-k f16 --cache-type-v f16",
+                baseline, false);
+            Check(valid.ErrorCount == 0 && valid.CanLikelyRun, "custom command preflight accepts a coherent command");
+
+            CommandPreflightResult invalid = CommandPreflightValidator.Validate(
+                "llama-server.exe --model model.gguf --port 70000 --ctx-size 524288 --n-gpu-layers nonsense",
+                baseline, false);
+            Check(invalid.ErrorCount >= 2 && invalid.WarningCount >= 1, "custom command preflight reports invalid values and resource risks");
+            Check(invalid.BuildReviewText(5).Contains("修改建议"), "custom command preflight provides actionable suggestions");
+
+            CommandPreflightResult lan = CommandPreflightValidator.Validate(
+                "llama-server.exe --model model.gguf --host 0.0.0.0 --port 8080", baseline, false);
+            Check(lan.WarningCount > 0 && lan.BuildReviewText(5).Contains("API Key"), "custom command preflight warns about unauthenticated LAN access");
+
+            CommandPreflightResult inlineSecret = CommandPreflightValidator.Validate(
+                "llama-server.exe --model model.gguf --api-key super-secret-value", baseline, false);
+            Check(inlineSecret.BuildReviewText(8).Contains("--api-key-file") && !inlineSecret.BuildReviewText(8).Contains("super-secret-value"),
+                "custom command preflight recommends managed key files without echoing secrets");
+        }
+
+        private static void CheckApiKeyStore()
+        {
+            string root = Path.Combine(Path.GetTempPath(), "LlamaServerManager-tests-" + Guid.NewGuid().ToString("N"));
+            string outside = root + "-outside.txt";
+            Directory.CreateDirectory(root);
+            try
+            {
+                ApiKeyStore store = new ApiKeyStore(root);
+                ManagedApiKeyFile saved = store.Save("测试 Key", "sk-first\r\nsk-second\r\nsk-first\r\n");
+                Check(saved.KeyCount == 2, "API Key manager stores one unique key per line");
+                Check(!saved.MaskedPreview.Contains("sk-first") && saved.MaskedPreview.EndsWith("irst"), "API Key list exposes only a masked preview");
+                Check(store.List().Count == 1 && store.Read(saved.FilePath).Contains("sk-second"), "API Key manager lists and reads managed files");
+                string generated = ApiKeyStore.GenerateKey();
+                Check(generated.StartsWith("llift_") && generated.Length > 40, "API Key manager generates cryptographically random keys");
+                File.WriteAllText(outside, "must-stay");
+                bool traversalBlocked = false;
+                try { store.Delete(outside); }
+                catch (InvalidOperationException) { traversalBlocked = true; }
+                Check(traversalBlocked && File.Exists(outside), "API Key manager blocks deletion outside its managed directory");
+                store.Delete(saved.FilePath);
+                Check(store.List().Count == 0, "API Key manager deletes only selected managed files");
+            }
+            finally
+            {
+                if (Directory.Exists(root)) Directory.Delete(root, true);
+                if (File.Exists(outside)) File.Delete(outside);
+            }
+        }
+
+        private static void CheckParameterPresets()
+        {
+            List<ParameterPreset> presets = ParameterPreset.CreateDefaults();
+            Check(presets.Count == 3 && presets[0].Name.StartsWith("预设 1") && presets[2].Name.StartsWith("预设 3"), "three named parameter preset slots are created");
+            ModelProfile target = ModelProfile.CreateGenericProfile();
+            target.ModelPath = @"D:\Models\Keep.gguf";
+            target.Host = "0.0.0.0";
+            target.Port = 8123;
+            presets[2].ApplyTo(target);
+            Check(target.ContextSize == 32768 && target.BatchSize == 4096, "parameter preset applies performance values");
+            Check(target.ModelPath == @"D:\Models\Keep.gguf" && target.Host == "0.0.0.0" && target.Port == 8123, "parameter preset does not overwrite identity or network settings");
+            target.ContextSize = 24576;
+            presets[0].Capture(target);
+            Check(presets[0].ContextSize == 24576, "parameter preset captures customized values");
         }
 
         private static void CheckAdaptivePlans()

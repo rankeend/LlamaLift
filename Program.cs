@@ -3,13 +3,13 @@ using System.Net;
 using System.Reflection;
 using System.Windows.Forms;
 
-[assembly: AssemblyTitle("Llama Server Manager")]
-[assembly: AssemblyDescription("通用 Windows llama.cpp 服务管理器与模型启动器")]
-[assembly: AssemblyCompany("Llama Server Manager Community")]
-[assembly: AssemblyProduct("LlamaServerManager")]
+[assembly: AssemblyTitle("LlamaLift")]
+[assembly: AssemblyDescription("本地模型，一键起飞。")]
+[assembly: AssemblyCompany("LlamaLift Community")]
+[assembly: AssemblyProduct("LlamaLift")]
 [assembly: AssemblyCopyright("Copyright © 2026")]
-[assembly: AssemblyVersion("0.2.0.0")]
-[assembly: AssemblyFileVersion("0.2.0.0")]
+[assembly: AssemblyVersion("0.3.0.0")]
+[assembly: AssemblyFileVersion("0.3.0.0")]
 
 namespace LlamaServerManager
 {
@@ -40,7 +40,7 @@ namespace LlamaServerManager
             string message = exception == null ? "未知错误" : exception.ToString();
             MessageBox.Show(
                 "程序遇到未处理错误：\r\n\r\n" + message,
-                "Llama Server Manager " + AppVersion.DisplayVersion,
+                "LlamaLift " + AppVersion.DisplayVersion,
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
         }

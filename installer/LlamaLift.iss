@@ -1,18 +1,18 @@
-#define MyAppName "Llama Server Manager"
-#define MyAppVersion "0.2.0"
-#define MyAppPublisher "Llama Server Manager Community"
-#define MyAppExeName "LlamaServerManager.exe"
+#define MyAppName "LlamaLift"
+#define MyAppVersion "0.3.0"
+#define MyAppPublisher "LlamaLift Community"
+#define MyAppExeName "LlamaLift.exe"
 
 [Setup]
 AppId={{BDE1C8B1-4E9B-4F54-B2A7-7B82B7DF42A0}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
-DefaultDirName={autopf}\Llama Server Manager
+DefaultDirName={autopf}\LlamaLift
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=..\release
-OutputBaseFilename=LlamaServerManager-v0.2.0-dev-Setup
+OutputBaseFilename=LlamaLift-v0.3.0-dev-Setup
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
@@ -23,7 +23,7 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 SetupIconFile=..\assets\LlamaServerManager-llama-icon-v2.ico
 VersionInfoVersion={#MyAppVersion}
 VersionInfoProductName={#MyAppName}
-VersionInfoDescription=Windows llama.cpp service manager and launcher
+VersionInfoDescription=本地模型，一键起飞。
 SetupLogging=yes
 
 [Languages]

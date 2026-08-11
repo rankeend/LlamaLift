@@ -6,6 +6,7 @@ using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
@@ -57,6 +58,7 @@ namespace LlamaServerManager
             if (profile.DisableWebUi) args.Add("--no-webui");
             if (profile.NoMmap) args.Add("--no-mmap");
             if (profile.Mlock) args.Add("--mlock");
+            if (profile.EnableMetrics) args.Add("--metrics");
             if (!string.IsNullOrWhiteSpace(profile.Reasoning))
             {
                 Add(args, "--reasoning", profile.Reasoning);
@@ -71,14 +73,56 @@ namespace LlamaServerManager
 
         public static string BuildDisplayCommand(ModelProfile profile)
         {
-            return Quote(profile.ServerExecutable) + " " + BuildArguments(profile);
+            if (profile != null && profile.UseCustomCommand)
+                return (profile.CustomCommand ?? string.Empty).Trim();
+            string executable = string.IsNullOrWhiteSpace(profile.ServerExecutable) ? "llama-server.exe" : Quote(profile.ServerExecutable);
+            return executable + " " + BuildArguments(profile);
+        }
+
+        public static string BuildSafeDisplayCommand(ModelProfile profile)
+        {
+            string command = BuildDisplayCommand(profile);
+            command = Regex.Replace(command,
+                "(?i)(--(?:api-key|token|password)\\s+)(?:\"[^\"]*\"|\\S+)", "$1\"***\"");
+            command = Regex.Replace(command,
+                "(?i)(--(?:api-key|token|password)=)(?:\"[^\"]*\"|\\S+)", "$1\"***\"");
+            return command;
+        }
+
+        public static string BuildLaunchExecutable(ModelProfile profile)
+        {
+            if (profile == null) return string.Empty;
+            string executable;
+            string arguments;
+            if (profile.UseCustomCommand)
+            {
+                if (CommandParser.TrySplitExecutableAndArguments(profile.CustomCommand, profile.ServerExecutable, out executable, out arguments))
+                    return executable;
+                return string.Empty;
+            }
+            return profile.ServerExecutable;
+        }
+
+        public static string BuildLaunchArguments(ModelProfile profile)
+        {
+            if (profile == null) return string.Empty;
+            string executable;
+            string arguments;
+            if (profile.UseCustomCommand)
+            {
+                if (CommandParser.TrySplitExecutableAndArguments(profile.CustomCommand, profile.ServerExecutable, out executable, out arguments))
+                    return arguments;
+                return profile.CustomCommand ?? string.Empty;
+            }
+            return BuildArguments(profile);
         }
 
         public static List<string> ValidateForStart(ModelProfile profile)
         {
             List<string> errors = new List<string>();
-            if (string.IsNullOrWhiteSpace(profile.ServerExecutable) || !File.Exists(profile.ServerExecutable))
-                errors.Add("找不到 llama-server.exe：" + profile.ServerExecutable);
+            string launchExecutable = BuildLaunchExecutable(profile);
+            if (string.IsNullOrWhiteSpace(launchExecutable) || !File.Exists(launchExecutable))
+                errors.Add("找不到 llama-server.exe：" + launchExecutable);
             if (string.IsNullOrWhiteSpace(profile.ModelPath) || !File.Exists(profile.ModelPath))
                 errors.Add("找不到模型文件：" + profile.ModelPath);
             if (!string.IsNullOrWhiteSpace(profile.MmprojPath) && !File.Exists(profile.MmprojPath))
@@ -95,6 +139,12 @@ namespace LlamaServerManager
                 errors.Add("CPU 线程数不能小于 0；0 表示由 llama.cpp 自动选择。");
             if (profile.BatchSize < 1 || profile.UbatchSize < 1 || profile.UbatchSize > profile.BatchSize)
                 errors.Add("批处理参数无效：ubatch 必须大于 0 且不能超过 batch。");
+            if (profile.UseCustomCommand)
+            {
+                CommandPreflightResult preflight = CommandPreflightValidator.Validate(profile.CustomCommand, profile, true);
+                foreach (CommandDiagnosticIssue issue in preflight.Issues)
+                    if (issue.Severity == CommandDiagnosticSeverity.Error && !errors.Contains(issue.Message)) errors.Add(issue.Message);
+            }
             return errors;
         }
 
@@ -154,9 +204,10 @@ namespace LlamaServerManager
 
                 expectedStop = false;
                 ProcessStartInfo psi = new ProcessStartInfo();
-                psi.FileName = profile.ServerExecutable;
-                psi.Arguments = CommandBuilder.BuildArguments(profile);
-                psi.WorkingDirectory = Path.GetDirectoryName(profile.ServerExecutable);
+                psi.FileName = CommandBuilder.BuildLaunchExecutable(profile);
+                psi.Arguments = CommandBuilder.BuildLaunchArguments(profile);
+                string workingDirectory = Path.GetDirectoryName(psi.FileName);
+                psi.WorkingDirectory = string.IsNullOrWhiteSpace(workingDirectory) ? AppDomain.CurrentDomain.BaseDirectory : workingDirectory;
                 psi.UseShellExecute = false;
                 psi.CreateNoWindow = true;
                 psi.RedirectStandardOutput = true;
@@ -171,7 +222,7 @@ namespace LlamaServerManager
                 process.ErrorDataReceived += OnErrorDataReceived;
                 process.Exited += OnExited;
 
-                Emit("准备启动：" + CommandBuilder.BuildDisplayCommand(profile), false);
+                Emit("准备启动：" + CommandBuilder.BuildSafeDisplayCommand(profile), false);
                 if (!process.Start())
                     throw new InvalidOperationException("无法启动 llama-server 进程。");
 
@@ -451,7 +502,7 @@ namespace LlamaServerManager
             request.Timeout = timeout;
             request.ReadWriteTimeout = timeout;
             request.Accept = "application/json";
-            request.UserAgent = "LlamaServerManager/" + AppVersion.ProductVersion;
+            request.UserAgent = "LlamaLift/" + AppVersion.ProductVersion;
 
             if (!string.IsNullOrWhiteSpace(bearerKey))
                 request.Headers[HttpRequestHeader.Authorization] = "Bearer " + bearerKey;

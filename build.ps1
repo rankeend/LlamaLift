@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 $projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$version = "0.2.0-dev"
+$version = "0.3.0-dev"
 $distDir = Join-Path $projectDir "dist"
 $installerDistDir = Join-Path $projectDir "dist-installer"
 $releaseDir = Join-Path $projectDir "release"
@@ -30,8 +30,13 @@ Get-ChildItem -LiteralPath $installerDistDir -Force | Remove-Item -Recurse -Forc
 $sources = @(
     (Join-Path $projectDir "Models.cs"),
     (Join-Path $projectDir "Services.cs"),
+    (Join-Path $projectDir "CommandEditing.cs"),
+    (Join-Path $projectDir "CommandValidation.cs"),
+    (Join-Path $projectDir "ApiKeyStore.cs"),
+    (Join-Path $projectDir "ApiKeyManagerDialog.cs"),
     (Join-Path $projectDir "RuntimeServices.cs"),
     (Join-Path $projectDir "AdaptiveTuning.cs"),
+    (Join-Path $projectDir "PerformanceMonitoring.cs"),
     (Join-Path $projectDir "Theme.cs"),
     (Join-Path $projectDir "MainFormV2.cs"),
     (Join-Path $projectDir "Program.cs")
@@ -46,7 +51,7 @@ $arguments = @(
     "/codepage:65001",
     "/win32manifest:$projectDir\app.manifest",
     "/win32icon:$appIcon",
-    "/out:$distDir\LlamaServerManager.exe",
+    "/out:$distDir\LlamaLift.exe",
     "/reference:System.dll",
     "/reference:System.Core.dll",
     "/reference:System.Drawing.dll",
@@ -71,11 +76,11 @@ New-Item -ItemType File -Path (Join-Path $distDir "portable.flag") -Force | Out-
 Copy-Item -Path (Join-Path $distDir "*") -Destination $installerDistDir -Recurse -Force
 Remove-Item -LiteralPath (Join-Path $installerDistDir "portable.flag") -Force
 
-$packagePath = Join-Path $releaseDir ("LlamaServerManager-v" + $version + "-portable-win-x64.zip")
+$packagePath = Join-Path $releaseDir ("LlamaLift-v" + $version + "-portable-win-x64.zip")
 Compress-Archive -Path (Join-Path $distDir "*") -DestinationPath $packagePath -Force
 
 Write-Host ""
 Write-Host "Build succeeded:" -ForegroundColor Green
-Write-Host (Join-Path $distDir "LlamaServerManager.exe")
+Write-Host (Join-Path $distDir "LlamaLift.exe")
 Write-Host "Portable package: $packagePath"
 Write-Host "Installer payload: $installerDistDir"
