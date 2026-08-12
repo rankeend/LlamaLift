@@ -8,8 +8,8 @@ namespace LlamaServerManager
 {
     internal static class AppVersion
     {
-        public const string ProductVersion = "0.3.0";
-        public const string DisplayVersion = "v0.3.0-dev";
+        public const string ProductVersion = "0.4.0";
+        public const string DisplayVersion = "v0.4.0-dev";
     }
 
     public sealed class AppConfig
@@ -23,10 +23,11 @@ namespace LlamaServerManager
         public List<InstalledRuntime> InstalledRuntimes { get; set; }
         public List<ParameterPreset> ParameterPresets { get; set; }
         public string SelectedParameterPresetId { get; set; }
+        public bool LegacyImportCompleted { get; set; }
 
         public AppConfig()
         {
-            SchemaVersion = 6;
+            SchemaVersion = 7;
             SelectedProfileId = string.Empty;
             Profiles = new List<ModelProfile>();
             ThemeMode = "Light";
@@ -35,6 +36,7 @@ namespace LlamaServerManager
             InstalledRuntimes = new List<InstalledRuntime>();
             ParameterPresets = ParameterPreset.CreateDefaults();
             SelectedParameterPresetId = ParameterPresets[1].Id;
+            LegacyImportCompleted = false;
         }
     }
 
@@ -133,6 +135,30 @@ namespace LlamaServerManager
             return (ModelProfile)MemberwiseClone();
         }
 
+        public bool SwitchToGeneratedCommand()
+        {
+            bool converted = UseCustomCommand;
+            UseCustomCommand = false;
+            CustomCommand = string.Empty;
+            LastCommandValidationSummary = string.Empty;
+            LastCommandValidatedAtUtc = string.Empty;
+            return converted;
+        }
+
+        public static string MergeExtraArguments(string preserved, string incoming)
+        {
+            string first = (preserved ?? string.Empty).Trim();
+            string second = (incoming ?? string.Empty).Trim();
+            if (first.Length == 0) return second;
+            if (second.Length == 0) return first;
+            if (string.Equals(first, second, StringComparison.Ordinal)) return first;
+            // Unknown arguments are deliberately lossless. Substring checks are unsafe here:
+            // "--cache-reuse 25" is a substring of "--cache-reuse 256", but the two
+            // command fragments are not equivalent. Keeping both is safer than silently
+            // discarding a user-supplied value; llama-server's preflight reports conflicts.
+            return first + " " + second;
+        }
+
         public void CopyCommandSettingsFrom(ModelProfile source)
         {
             if (source == null) return;
@@ -162,6 +188,8 @@ namespace LlamaServerManager
             Threads = source.Threads;
             BatchSize = source.BatchSize;
             UbatchSize = source.UbatchSize;
+            TuningPreset = source.TuningPreset;
+            LastTuningSummary = source.LastTuningSummary;
         }
 
         public override string ToString()
@@ -173,6 +201,7 @@ namespace LlamaServerManager
     public sealed class ParameterPreset
     {
         public string Id { get; set; }
+        public string BuiltInKey { get; set; }
         public string Name { get; set; }
         public int ContextSize { get; set; }
         public int Parallel { get; set; }
@@ -197,6 +226,7 @@ namespace LlamaServerManager
         public ParameterPreset()
         {
             Id = Guid.NewGuid().ToString("N");
+            BuiltInKey = string.Empty;
             Name = "未命名预设";
             ContextSize = 8192;
             Parallel = 1;
@@ -262,34 +292,46 @@ namespace LlamaServerManager
             profile.UbatchSize = UbatchSize;
         }
 
+        public ParameterPreset CloneAs(string newName)
+        {
+            ParameterPreset copy = (ParameterPreset)MemberwiseClone();
+            copy.Id = Guid.NewGuid().ToString("N");
+            copy.BuiltInKey = string.Empty;
+            copy.Name = newName;
+            return copy;
+        }
+
         public static List<ParameterPreset> CreateDefaults()
         {
             ModelProfile fast = ModelProfile.CreateGenericProfile();
-            fast.ContextSize = 4096;
+            fast.ContextSize = 32768;
             fast.CacheTypeK = "q4_0";
             fast.CacheTypeV = "q4_0";
             fast.BatchSize = 2048;
             fast.UbatchSize = 512;
 
             ModelProfile balanced = ModelProfile.CreateGenericProfile();
-            balanced.ContextSize = 8192;
+            balanced.ContextSize = 65536;
             balanced.CacheTypeK = "q8_0";
             balanced.CacheTypeV = "q8_0";
 
             ModelProfile extreme = ModelProfile.CreateGenericProfile();
-            extreme.ContextSize = 32768;
+            extreme.ContextSize = 131072;
             extreme.CacheTypeK = "f16";
             extreme.CacheTypeV = "f16";
             extreme.BatchSize = 4096;
             extreme.UbatchSize = 1024;
 
             ParameterPreset first = new ParameterPreset();
+            first.BuiltInKey = "Fast";
             first.Name = "预设 1 · 快速";
             first.Capture(fast);
             ParameterPreset second = new ParameterPreset();
+            second.BuiltInKey = "Balanced";
             second.Name = "预设 2 · 均衡";
             second.Capture(balanced);
             ParameterPreset third = new ParameterPreset();
+            third.BuiltInKey = "Extreme";
             third.Name = "预设 3 · 极限";
             third.Capture(extreme);
             return new List<ParameterPreset> { first, second, third };
@@ -347,9 +389,16 @@ namespace LlamaServerManager
             get
             {
                 if (IsPortable) return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "data");
-                string branded = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LlamaLift");
-                string legacy = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LlamaServerManager");
-                return Directory.Exists(branded) || !Directory.Exists(legacy) ? branded : legacy;
+                return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LlamaLift");
+            }
+        }
+
+        private static string LegacyConfigPath
+        {
+            get
+            {
+                return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "LlamaServerManager", "settings.json");
             }
         }
 
@@ -382,6 +431,20 @@ namespace LlamaServerManager
 
             if (!File.Exists(ConfigPath))
             {
+                if (!IsPortable && File.Exists(LegacyConfigPath))
+                {
+                    try
+                    {
+                        AppConfig imported = DeserializeAndNormalize(File.ReadAllText(LegacyConfigPath, Encoding.UTF8));
+                        imported.LegacyImportCompleted = true;
+                        Save(imported);
+                        return imported;
+                    }
+                    catch
+                    {
+                        // Leave the legacy file untouched and fall back to a new configuration.
+                    }
+                }
                 AppConfig initial = CreateInitialConfig();
                 Save(initial);
                 return initial;
@@ -397,6 +460,20 @@ namespace LlamaServerManager
                     Save(config);
                 }
                 Normalize(config);
+                if (!IsPortable && !config.LegacyImportCompleted && File.Exists(LegacyConfigPath))
+                {
+                    try
+                    {
+                        AppConfig legacy = DeserializeAndNormalize(File.ReadAllText(LegacyConfigPath, Encoding.UTF8));
+                        MergeLegacyConfiguration(config, legacy);
+                        config.LegacyImportCompleted = true;
+                        Save(config);
+                    }
+                    catch
+                    {
+                        // A malformed legacy file must never invalidate the current LlamaLift configuration.
+                    }
+                }
                 return config;
             }
             catch
@@ -443,10 +520,147 @@ namespace LlamaServerManager
             return config;
         }
 
+        internal static AppConfig DeserializeAndNormalize(string json)
+        {
+            AppConfig config = Serializer.Deserialize<AppConfig>(json);
+            if (config == null) throw new InvalidDataException("配置内容为空。");
+            Normalize(config);
+            return config;
+        }
+
+        internal static void NormalizeForTesting(AppConfig config)
+        {
+            Normalize(config);
+        }
+
+        internal static void MergeLegacyForTesting(AppConfig target, AppConfig legacy)
+        {
+            MergeLegacyConfiguration(target, legacy);
+        }
+
+        private static void MergeLegacyConfiguration(AppConfig target, AppConfig legacy)
+        {
+            if (target == null || legacy == null) return;
+            if (target.Profiles.Count == 1 && IsBlankProfile(target.Profiles[0]) && legacy.Profiles.Count > 0)
+            {
+                target.Profiles.Clear();
+                target.SelectedProfileId = legacy.SelectedProfileId;
+            }
+            foreach (ModelProfile source in legacy.Profiles)
+            {
+                int match = -1;
+                for (int i = 0; i < target.Profiles.Count; i++)
+                {
+                    ModelProfile candidate = target.Profiles[i];
+                    if ((!string.IsNullOrWhiteSpace(source.Id) && candidate.Id == source.Id) ||
+                        (string.Equals(candidate.Name, source.Name, StringComparison.OrdinalIgnoreCase) &&
+                         string.Equals(candidate.ModelPath, source.ModelPath, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        match = i;
+                        break;
+                    }
+                }
+                if (match < 0) target.Profiles.Add(source);
+                else if (!ProfilesEquivalent(target.Profiles[match], source))
+                {
+                    ModelProfile imported = source.CloneAs(UniqueImportedName(target.Profiles, source.Name));
+                    target.Profiles.Add(imported);
+                }
+            }
+            foreach (InstalledRuntime source in legacy.InstalledRuntimes)
+            {
+                bool exists = false;
+                foreach (InstalledRuntime candidate in target.InstalledRuntimes)
+                    if (candidate.Id == source.Id || string.Equals(candidate.ServerExecutable, source.ServerExecutable, StringComparison.OrdinalIgnoreCase)) { exists = true; break; }
+                if (!exists) target.InstalledRuntimes.Add(source);
+            }
+            foreach (ParameterPreset source in legacy.ParameterPresets)
+            {
+                ParameterPreset match = null;
+                foreach (ParameterPreset candidate in target.ParameterPresets)
+                    if (candidate.Id == source.Id ||
+                        (!string.IsNullOrWhiteSpace(source.BuiltInKey) && candidate.BuiltInKey == source.BuiltInKey) ||
+                        string.Equals(candidate.Name, source.Name, StringComparison.OrdinalIgnoreCase)) { match = candidate; break; }
+                if (match == null) target.ParameterPresets.Add(source);
+                else if (!PresetsEquivalent(match, source))
+                    target.ParameterPresets.Add(source.CloneAs(source.Name + "（旧版导入）"));
+            }
+            bool selectedExists = false;
+            foreach (ModelProfile profile in target.Profiles)
+                if (profile.Id == target.SelectedProfileId) { selectedExists = true; break; }
+            if (!selectedExists) target.SelectedProfileId = legacy.SelectedProfileId;
+            Normalize(target);
+        }
+
+        private static bool IsBlankProfile(ModelProfile profile)
+        {
+            return profile != null && string.IsNullOrWhiteSpace(profile.ServerExecutable) &&
+                string.IsNullOrWhiteSpace(profile.ModelPath) && string.IsNullOrWhiteSpace(profile.MmprojPath);
+        }
+
+        private static bool ProfilesEquivalent(ModelProfile left, ModelProfile right)
+        {
+            if (left == null || right == null) return left == right;
+            return string.Equals(left.ServerExecutable, right.ServerExecutable, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(left.ModelPath, right.ModelPath, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(left.MmprojPath, right.MmprojPath, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(left.Alias, right.Alias, StringComparison.Ordinal) &&
+                string.Equals(left.ApiKeyFile, right.ApiKeyFile, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(left.Host, right.Host, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(left.AdvertisedHost, right.AdvertisedHost, StringComparison.OrdinalIgnoreCase) &&
+                left.Port == right.Port &&
+                left.ContextSize == right.ContextSize && left.Parallel == right.Parallel &&
+                string.Equals(left.GpuLayers, right.GpuLayers, StringComparison.OrdinalIgnoreCase) &&
+                left.FitEnabled == right.FitEnabled && left.FitTarget == right.FitTarget &&
+                left.FlashAttention == right.FlashAttention &&
+                string.Equals(left.CacheTypeK, right.CacheTypeK, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(left.CacheTypeV, right.CacheTypeV, StringComparison.OrdinalIgnoreCase) &&
+                left.ImageMinTokens == right.ImageMinTokens && left.Jinja == right.Jinja &&
+                left.DisableWebUi == right.DisableWebUi && left.NoMmap == right.NoMmap && left.Mlock == right.Mlock &&
+                left.EnableMetrics == right.EnableMetrics && string.Equals(left.Reasoning, right.Reasoning, StringComparison.Ordinal) &&
+                string.Equals(left.ExtraArguments, right.ExtraArguments, StringComparison.Ordinal) &&
+                left.Threads == right.Threads && left.BatchSize == right.BatchSize && left.UbatchSize == right.UbatchSize &&
+                string.Equals(left.TuningPreset, right.TuningPreset, StringComparison.OrdinalIgnoreCase) &&
+                left.UseCustomCommand == right.UseCustomCommand &&
+                string.Equals(left.CustomCommand, right.CustomCommand, StringComparison.Ordinal);
+        }
+
+        private static string UniqueImportedName(List<ModelProfile> profiles, string name)
+        {
+            string baseName = (string.IsNullOrWhiteSpace(name) ? "未命名模型" : name) + "（旧版导入）";
+            string candidate = baseName;
+            int suffix = 2;
+            while (ContainsProfileName(profiles, candidate)) candidate = baseName + " " + suffix++;
+            return candidate;
+        }
+
+        private static bool PresetsEquivalent(ParameterPreset left, ParameterPreset right)
+        {
+            if (left == null || right == null) return left == right;
+            return left.ContextSize == right.ContextSize && left.Parallel == right.Parallel &&
+                string.Equals(left.GpuLayers, right.GpuLayers, StringComparison.OrdinalIgnoreCase) &&
+                left.FitEnabled == right.FitEnabled && left.FitTarget == right.FitTarget &&
+                left.FlashAttention == right.FlashAttention &&
+                string.Equals(left.CacheTypeK, right.CacheTypeK, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(left.CacheTypeV, right.CacheTypeV, StringComparison.OrdinalIgnoreCase) &&
+                left.ImageMinTokens == right.ImageMinTokens && left.Jinja == right.Jinja &&
+                left.DisableWebUi == right.DisableWebUi && left.NoMmap == right.NoMmap && left.Mlock == right.Mlock &&
+                left.EnableMetrics == right.EnableMetrics && string.Equals(left.Reasoning, right.Reasoning, StringComparison.Ordinal) &&
+                left.Threads == right.Threads && left.BatchSize == right.BatchSize && left.UbatchSize == right.UbatchSize &&
+                string.Equals(left.ExtraArguments, right.ExtraArguments, StringComparison.Ordinal);
+        }
+
+        private static bool ContainsProfileName(List<ModelProfile> profiles, string name)
+        {
+            foreach (ModelProfile profile in profiles)
+                if (string.Equals(profile.Name, name, StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
         private static void Normalize(AppConfig config)
         {
             int previousSchema = config.SchemaVersion;
-            config.SchemaVersion = 6;
+            config.SchemaVersion = 7;
             if (string.IsNullOrWhiteSpace(config.ThemeMode)) config.ThemeMode = "System";
             if (string.IsNullOrWhiteSpace(config.AccentName)) config.AccentName = "Blue";
             if (config.Profiles == null)
@@ -461,10 +675,12 @@ namespace LlamaServerManager
             {
                 config.ParameterPresets = ParameterPreset.CreateDefaults();
             }
+            if (previousSchema < 7) UpgradeLegacyBuiltInPresets(config.ParameterPresets);
 
             foreach (ParameterPreset preset in config.ParameterPresets)
             {
                 if (string.IsNullOrWhiteSpace(preset.Id)) preset.Id = Guid.NewGuid().ToString("N");
+                if (preset.BuiltInKey == null) preset.BuiltInKey = string.Empty;
                 if (string.IsNullOrWhiteSpace(preset.Name)) preset.Name = "未命名预设";
                 if (preset.ContextSize < 0) preset.ContextSize = 8192;
                 if (preset.Parallel <= 0) preset.Parallel = 1;
@@ -531,6 +747,32 @@ namespace LlamaServerManager
             if (!selectedExists && config.Profiles.Count > 0)
             {
                 config.SelectedProfileId = config.Profiles[0].Id;
+            }
+        }
+
+        private static void UpgradeLegacyBuiltInPresets(List<ParameterPreset> presets)
+        {
+            foreach (ParameterPreset preset in presets)
+            {
+                if (preset == null || !string.IsNullOrWhiteSpace(preset.BuiltInKey)) continue;
+                if (preset.Name == "预设 1 · 快速" && preset.ContextSize == 4096 &&
+                    string.Equals(preset.CacheTypeK, "q4_0", StringComparison.OrdinalIgnoreCase) && preset.BatchSize == 2048)
+                {
+                    preset.BuiltInKey = "Fast";
+                    preset.ContextSize = 32768;
+                }
+                else if (preset.Name == "预设 2 · 均衡" && preset.ContextSize == 8192 &&
+                    string.Equals(preset.CacheTypeK, "q8_0", StringComparison.OrdinalIgnoreCase))
+                {
+                    preset.BuiltInKey = "Balanced";
+                    preset.ContextSize = 65536;
+                }
+                else if (preset.Name == "预设 3 · 极限" && preset.ContextSize == 32768 &&
+                    string.Equals(preset.CacheTypeK, "f16", StringComparison.OrdinalIgnoreCase) && preset.BatchSize == 4096)
+                {
+                    preset.BuiltInKey = "Extreme";
+                    preset.ContextSize = 131072;
+                }
             }
         }
 

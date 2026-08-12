@@ -427,9 +427,106 @@ namespace LlamaServerManager
         }
     }
 
+    public static class RuntimeCapabilityDetector
+    {
+        private static readonly object Sync = new object();
+        private static readonly Dictionary<string, CacheEntry> Cache = new Dictionary<string, CacheEntry>(StringComparer.OrdinalIgnoreCase);
+        private static readonly string[] KnownCacheTypes =
+        {
+            "f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1",
+            "turbo2", "turbo3", "turbo4"
+        };
+
+        public static ICollection<string> StandardCacheTypes()
+        {
+            return new List<string> { "f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1" };
+        }
+
+        public static ICollection<string> DetectCacheTypes(string executable)
+        {
+            List<string> fallback = new List<string>(StandardCacheTypes());
+            if (string.IsNullOrWhiteSpace(executable) || !File.Exists(executable)) return fallback;
+            DateTime modified = File.GetLastWriteTimeUtc(executable);
+            lock (Sync)
+            {
+                CacheEntry cached;
+                if (Cache.TryGetValue(executable, out cached) && cached.ModifiedUtc == modified)
+                    return new List<string>(cached.CacheTypes);
+            }
+
+            string output = ReadHelp(executable);
+            List<string> detected = new List<string>();
+            foreach (string type in KnownCacheTypes)
+                if (Regex.IsMatch(output, @"(?<![A-Za-z0-9_])" + Regex.Escape(type) + @"(?![A-Za-z0-9_])", RegexOptions.IgnoreCase))
+                    detected.Add(type);
+            if (detected.Count == 0) detected.AddRange(fallback);
+            string fileName = Path.GetFileName(executable);
+            if ((fileName.IndexOf("turbo", StringComparison.OrdinalIgnoreCase) >= 0 || output.IndexOf("turboquant", StringComparison.OrdinalIgnoreCase) >= 0))
+            {
+                AddUnique(detected, "turbo2");
+                AddUnique(detected, "turbo3");
+                AddUnique(detected, "turbo4");
+            }
+            lock (Sync) Cache[executable] = new CacheEntry(modified, detected);
+            return new List<string>(detected);
+        }
+
+        private static string ReadHelp(string executable)
+        {
+            StringBuilder output = new StringBuilder();
+            try
+            {
+                ProcessStartInfo info = new ProcessStartInfo(executable, "--help");
+                info.WorkingDirectory = Path.GetDirectoryName(executable);
+                info.UseShellExecute = false;
+                info.CreateNoWindow = true;
+                info.RedirectStandardOutput = true;
+                info.RedirectStandardError = true;
+                info.StandardOutputEncoding = Encoding.UTF8;
+                info.StandardErrorEncoding = Encoding.UTF8;
+                using (Process process = new Process())
+                {
+                    process.StartInfo = info;
+                    process.OutputDataReceived += delegate(object sender, DataReceivedEventArgs e) { if (e.Data != null) lock (output) output.AppendLine(e.Data); };
+                    process.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs e) { if (e.Data != null) lock (output) output.AppendLine(e.Data); };
+                    if (!process.Start()) return string.Empty;
+                    process.BeginOutputReadLine();
+                    process.BeginErrorReadLine();
+                    if (!process.WaitForExit(6000)) try { process.Kill(); } catch { }
+                    try { process.WaitForExit(1000); } catch { }
+                }
+            }
+            catch { }
+            lock (output) return output.ToString();
+        }
+
+        private static void AddUnique(List<string> values, string value)
+        {
+            foreach (string existing in values)
+                if (string.Equals(existing, value, StringComparison.OrdinalIgnoreCase)) return;
+            values.Add(value);
+        }
+
+        private sealed class CacheEntry
+        {
+            public DateTime ModifiedUtc { get; private set; }
+            public List<string> CacheTypes { get; private set; }
+            public CacheEntry(DateTime modifiedUtc, List<string> cacheTypes)
+            {
+                ModifiedUtc = modifiedUtc;
+                CacheTypes = new List<string>(cacheTypes);
+            }
+        }
+    }
+
     public static class AdaptiveTuner
     {
         public static AdaptivePlan Recommend(HardwareProfile hardware, GgufModelInfo model, string preset)
+        {
+            return Recommend(hardware, model, preset, RuntimeCapabilityDetector.StandardCacheTypes());
+        }
+
+        public static AdaptivePlan Recommend(HardwareProfile hardware, GgufModelInfo model, string preset, ICollection<string> supportedCacheTypes)
         {
             if (hardware == null) throw new ArgumentNullException("hardware");
             if (model == null) throw new ArgumentNullException("model");
@@ -439,15 +536,30 @@ namespace LlamaServerManager
 
             bool fast = mode == "Fast";
             bool extreme = mode == "Extreme";
-            plan.CacheTypeK = fast ? "q4_0" : (extreme ? "f16" : "q8_0");
-            plan.CacheTypeV = fast ? "q4_0" : (extreme ? "f16" : "q8_0");
+            bool turboAvailable = ContainsCacheType(supportedCacheTypes, "turbo2") ||
+                ContainsCacheType(supportedCacheTypes, "turbo3") || ContainsCacheType(supportedCacheTypes, "turbo4");
+            if (fast)
+            {
+                plan.CacheTypeK = ChooseCacheType(supportedCacheTypes, "turbo4", "q4_0", "q8_0", "f16", "f32");
+                plan.CacheTypeV = ChooseCacheType(supportedCacheTypes, "turbo4", "q4_0", "q8_0", "f16", "f32");
+            }
+            else if (extreme)
+            {
+                plan.CacheTypeK = ChooseCacheType(supportedCacheTypes, "turbo3", "turbo4", "turbo2", "f16", "q8_0", "q4_0");
+                plan.CacheTypeV = ChooseCacheType(supportedCacheTypes, "turbo3", "turbo4", "turbo2", "f16", "q8_0", "q4_0");
+            }
+            else
+            {
+                plan.CacheTypeK = ChooseCacheType(supportedCacheTypes, "q8_0", "turbo4", "turbo3", "q4_0", "f16", "f32");
+                plan.CacheTypeV = ChooseCacheType(supportedCacheTypes, "turbo4", "q8_0", "turbo3", "q4_0", "f16", "f32");
+            }
             plan.FitTarget = fast ? 2048 : (extreme ? 1024 : 1536);
             plan.BatchSize = fast ? 2048 : (extreme ? 512 : 1024);
             plan.UbatchSize = fast ? 512 : 256;
             plan.Threads = fast ? hardware.LogicalProcessors : Math.Max(1, hardware.LogicalProcessors - 2);
 
             long modelMaximum = model.ContextLength > 0 ? model.ContextLength : 32768L;
-            long desired = fast ? 8192L : (extreme ? Math.Min(modelMaximum, 131072L) : 32768L);
+            long desired = fast ? 32768L : (extreme ? Math.Min(modelMaximum, 262144L) : 65536L);
             desired = Math.Min(desired, modelMaximum);
             double cacheBytes = CacheBytesPerToken(model, plan.CacheTypeK);
             double usage = fast ? 0.64D : (extreme ? 0.84D : 0.74D);
@@ -475,7 +587,7 @@ namespace LlamaServerManager
             else if (hardware.LargestGpuMemoryBytes > (weights + estimatedKv) * 1.15D) plan.GpuLayers = "all";
             else plan.GpuLayers = "auto";
 
-            if (extreme && cacheBudget < cacheBytes * Math.Max(8192, plan.ContextSize))
+            if (extreme && !turboAvailable && cacheBudget < cacheBytes * Math.Max(8192, plan.ContextSize))
             {
                 plan.CacheTypeK = "q8_0";
                 plan.CacheTypeV = "q8_0";
@@ -499,8 +611,29 @@ namespace LlamaServerManager
             double layers = model.BlockCount > 0 ? model.BlockCount : 32D;
             double embedding = model.EmbeddingLength > 0 ? model.EmbeddingLength : 4096D;
             double ratio = model.HeadCount > 0 && model.KvHeadCount > 0 ? Math.Min(1D, model.KvHeadCount / (double)model.HeadCount) : 0.25D;
-            double bytes = cacheType == "f16" || cacheType == "bf16" ? 2D : (cacheType == "q8_0" ? 1.0625D : 0.5625D);
+            string type = (cacheType ?? string.Empty).ToLowerInvariant();
+            double bytes = type == "f16" || type == "bf16" ? 2D :
+                (type == "q8_0" ? 1.0625D :
+                (type == "turbo4" ? 0.55D : (type == "turbo3" ? 0.42D : (type == "turbo2" ? 0.32D : 0.5625D))));
             return layers * embedding * ratio * 2D * bytes;
+        }
+
+        private static bool ContainsCacheType(ICollection<string> values, string wanted)
+        {
+            if (values == null) return false;
+            foreach (string value in values)
+                if (string.Equals(value, wanted, StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
+        private static string ChooseCacheType(ICollection<string> supported, params string[] preferred)
+        {
+            foreach (string wanted in preferred)
+                if (ContainsCacheType(supported, wanted)) return wanted;
+            if (supported != null)
+                foreach (string available in supported)
+                    if (!string.IsNullOrWhiteSpace(available)) return available;
+            return "f16";
         }
 
         private static long RoundContext(long value)
@@ -529,6 +662,7 @@ namespace LlamaServerManager
 
         public static string DisplayPreset(string value)
         {
+            if (string.Equals(value, "Custom", StringComparison.OrdinalIgnoreCase) || value == "自定义") return "自定义";
             string normalized = NormalizePreset(value);
             return normalized == "Fast" ? "快速" : (normalized == "Extreme" ? "极限" : "均衡");
         }

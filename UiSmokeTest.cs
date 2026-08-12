@@ -279,6 +279,36 @@ namespace LlamaServerManager
                 }
             }
 
+            FieldInfo processMetricField = typeof(MainFormV2).GetField("lblProcessMetric", BindingFlags.Instance | BindingFlags.NonPublic);
+            Label processMetric = processMetricField == null ? null : processMetricField.GetValue(form) as Label;
+            Control metricGrid = processMetric == null || processMetric.Parent == null || processMetric.Parent.Parent == null
+                ? null : processMetric.Parent.Parent.Parent;
+            if (metricGrid == null || !string.Equals(metricGrid.Tag as string, "background", StringComparison.OrdinalIgnoreCase) || metricGrid.BackColor != expectedBackground)
+                problems.Add("rounded dashboard metrics have a square surface-colored backing layer");
+
+            FieldInfo startField = typeof(MainFormV2).GetField("btnStart", BindingFlags.Instance | BindingFlags.NonPublic);
+            FieldInfo stopField = typeof(MainFormV2).GetField("btnStop", BindingFlags.Instance | BindingFlags.NonPublic);
+            FieldInfo restartField = typeof(MainFormV2).GetField("btnRestart", BindingFlags.Instance | BindingFlags.NonPublic);
+            Control startButton = startField == null ? null : startField.GetValue(form) as Control;
+            Control stopButton = stopField == null ? null : stopField.GetValue(form) as Control;
+            Control restartButton = restartField == null ? null : restartField.GetValue(form) as Control;
+            if (startButton == null || stopButton == null || restartButton == null ||
+                startButton.Parent == null || !ReferenceEquals(startButton.Parent, stopButton.Parent) || !ReferenceEquals(startButton.Parent, restartButton.Parent))
+                problems.Add("dashboard lifecycle action row is incomplete");
+            else if (startButton.Parent.Visible)
+            {
+                Rectangle restartBounds = restartButton.RectangleToScreen(restartButton.ClientRectangle);
+                Rectangle stopBounds = stopButton.RectangleToScreen(stopButton.ClientRectangle);
+                Rectangle startBounds = startButton.RectangleToScreen(startButton.ClientRectangle);
+                Rectangle actionBounds = startButton.Parent.RectangleToScreen(startButton.Parent.ClientRectangle);
+                if (Math.Abs(restartBounds.Top - stopBounds.Top) > 2 || Math.Abs(stopBounds.Top - startBounds.Top) > 2)
+                    problems.Add("dashboard lifecycle actions wrapped instead of staying on one row");
+                if (!(restartBounds.Left < stopBounds.Left && stopBounds.Left < startBounds.Left))
+                    problems.Add("dashboard lifecycle actions are not ordered restart, stop, start from left to right");
+                if (restartBounds.IntersectsWith(stopBounds) || stopBounds.IntersectsWith(startBounds) || !actionBounds.Contains(restartBounds) || !actionBounds.Contains(stopBounds) || !actionBounds.Contains(startBounds))
+                    problems.Add("dashboard lifecycle actions overlap or exceed their container");
+            }
+
             FieldInfo commandPageField = typeof(MainFormV2).GetField("commandPage", BindingFlags.Instance | BindingFlags.NonPublic);
             FieldInfo commandEditorField = typeof(MainFormV2).GetField("txtCommandEditor", BindingFlags.Instance | BindingFlags.NonPublic);
             FieldInfo parameterPresetField = typeof(MainFormV2).GetField("cmbParameterPreset", BindingFlags.Instance | BindingFlags.NonPublic);
@@ -331,6 +361,8 @@ namespace LlamaServerManager
                     Control input = inputInfo == null ? null : inputInfo.GetValue(form) as Control;
                     if (input == null || input.Width < 120) problems.Add("profile input is hidden or too narrow: " + inputField);
                 }
+                if (FindControl(profilePage, "检测") == null)
+                    problems.Add("profile page has no automatic llama-server detection action");
             }
 
             AuditChildren(form, problems);

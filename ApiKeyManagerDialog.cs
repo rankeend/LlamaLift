@@ -125,7 +125,7 @@ namespace LlamaServerManager
             lblSummary.Dock = DockStyle.Fill;
             lblSummary.TextAlign = ContentAlignment.MiddleLeft;
             editor.Controls.Add(lblSummary, 0, 5);
-            Label security = MakeLabel("为兼容 llama.cpp，密钥以本地文本文件保存。NTFS 下会限制为当前 Windows 用户访问；请勿共享 data/api-keys 目录。", 8.25F, FontStyle.Regular, palette.Muted);
+            Label security = MakeLabel("为兼容 llama.cpp，密钥以本地文本文件保存，并继承所在目录权限。请勿共享 data/api-keys 目录或把密钥打包发布。", 8.25F, FontStyle.Regular, palette.Muted);
             security.Dock = DockStyle.Fill;
             editor.Controls.Add(security, 0, 6);
             root.Controls.Add(editor, 1, 1);
@@ -146,7 +146,17 @@ namespace LlamaServerManager
             Controls.Add(root);
             AcceptButton = null;
             CancelButton = closeButton;
-            Shown += delegate { ThemeService.ApplyNativeTitleBar(this, palette.IsDark); RefreshRecords(initialPath); };
+            Shown += delegate
+            {
+                ThemeService.ApplyNativeTitleBar(this, palette.IsDark);
+                RefreshRecords(initialPath);
+                string readError;
+                if (!string.IsNullOrWhiteSpace(initialPath) && !ApiKeyFileSupport.TryOpenForRead(initialPath, out readError))
+                {
+                    lblSummary.Text = "当前配置的密钥无法读取，请重新选择或新建密钥。";
+                    lblSummary.ForeColor = palette.Danger;
+                }
+            };
             FormClosed += delegate { txtKeys.Text = string.Empty; };
         }
 

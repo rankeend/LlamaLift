@@ -90,7 +90,8 @@ namespace LlamaServerManager
     {
         private static readonly HashSet<string> KnownCacheTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            "f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"
+            "f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1",
+            "turbo2", "turbo3", "turbo4"
         };
 
         public static CommandPreflightResult Validate(string command, ModelProfile baseline, bool inspectEnvironment)
@@ -200,10 +201,10 @@ namespace LlamaServerManager
 
             if (!KnownCacheTypes.Contains(profile.CacheTypeK))
                 Add(result, "cache-k", CommandDiagnosticSeverity.Warning, "KV Cache K 类型可能不受支持：" + profile.CacheTypeK,
-                    "优先使用 f16、q8_0 或 q4_0，并以当前 llama-server --help 输出为准。");
+                    "以当前 llama-server --help 输出为准；turbo2/turbo3/turbo4 仅适用于明确支持 TurboQuant 的分支。");
             if (!KnownCacheTypes.Contains(profile.CacheTypeV))
                 Add(result, "cache-v", CommandDiagnosticSeverity.Warning, "KV Cache V 类型可能不受支持：" + profile.CacheTypeV,
-                    "优先使用 f16、q8_0 或 q4_0，并以当前 llama-server --help 输出为准。");
+                    "以当前 llama-server --help 输出为准；turbo2/turbo3/turbo4 仅适用于明确支持 TurboQuant 的分支。");
 
             if (profile.ContextSize > 262144)
                 Add(result, "large-context", CommandDiagnosticSeverity.Warning, "上下文长度非常大（" + profile.ContextSize + "），可能导致显存或内存不足。",

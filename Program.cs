@@ -8,8 +8,8 @@ using System.Windows.Forms;
 [assembly: AssemblyCompany("LlamaLift Community")]
 [assembly: AssemblyProduct("LlamaLift")]
 [assembly: AssemblyCopyright("Copyright © 2026")]
-[assembly: AssemblyVersion("0.3.0.0")]
-[assembly: AssemblyFileVersion("0.3.0.0")]
+[assembly: AssemblyVersion("0.4.0.0")]
+[assembly: AssemblyFileVersion("0.4.0.0")]
 
 namespace LlamaServerManager
 {

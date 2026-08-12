@@ -4,6 +4,10 @@ using System.Reflection;
 using System.IO;
 using System.Text;
 using System.IO.Compression;
+using System.Diagnostics;
+using System.Net;
+using System.Net.Sockets;
+using System.Threading;
 
 namespace LlamaServerManager
 {
@@ -11,8 +15,13 @@ namespace LlamaServerManager
     {
         private static int failures;
 
-        private static void Main()
+        private static void Main(string[] args)
         {
+            if (Array.IndexOf(args, "--fake-stay-alive") >= 0)
+            {
+                Thread.Sleep(60000);
+                return;
+            }
             ModelProfile generic = ModelProfile.CreateGenericProfile();
             Check(string.IsNullOrWhiteSpace(generic.ServerExecutable), "generic profile has no fixed backend path");
             Check(string.IsNullOrWhiteSpace(generic.ModelPath), "generic profile has no fixed model path");
@@ -50,9 +59,13 @@ namespace LlamaServerManager
             CheckCommandEditing();
             CheckCommandPreflight();
             CheckApiKeyStore();
+            CheckApiKeyLaunchCompatibility();
+            CheckLlamaServerLocator();
             CheckParameterPresets();
             CheckNormalizationDefaults();
+            CheckConfigurationMigration();
             CheckAdaptivePlans();
+            CheckProcessLifecycle();
             CheckGgufMetadataReader();
             CheckZipTraversalDefense();
             if (string.Equals(Environment.GetEnvironmentVariable("LLAMA_MANAGER_NETWORK_TEST"), "1", StringComparison.Ordinal))
@@ -149,6 +162,36 @@ namespace LlamaServerManager
             }
         }
 
+        private static void CheckApiKeyLaunchCompatibility()
+        {
+            string root = Path.Combine(Path.GetTempPath(), "llamalift-key-兼容性-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                Directory.CreateDirectory(root);
+                string source = Path.Combine(root, "密钥.txt");
+                File.WriteAllText(source, "sk-test-only", new UTF8Encoding(false));
+                bool bridged;
+                string launchPath = ApiKeyFileSupport.PrepareForLaunch(source, out bridged);
+                Check(bridged && File.Exists(launchPath) && ApiKeyFileSupport.IsAscii(launchPath),
+                    "non-ASCII API Key paths are bridged to a readable ASCII launch path");
+                Check(File.ReadAllText(launchPath, Encoding.UTF8) == "sk-test-only",
+                    "API Key launch bridge preserves file contents");
+                string rewritten = ServerProcessManager.ReplaceApiKeyFileArgument(
+                    "--model model.gguf --api-key-file \"" + source + "\" --port 8080", launchPath);
+                Check(rewritten.Contains(launchPath) && !rewritten.Contains(source),
+                    "generated and custom launch arguments use the compatibility path");
+                string readError;
+                Check(ApiKeyFileSupport.TryOpenForRead(source, out readError),
+                    "API Key validation performs a real read-open check");
+                ApiKeyFileSupport.ReleaseRuntimeCopy(launchPath);
+                Check(!File.Exists(launchPath), "temporary API Key bridge is removed after the server session");
+            }
+            finally
+            {
+                try { if (Directory.Exists(root)) Directory.Delete(root, true); } catch { }
+            }
+        }
+
         private static void CheckParameterPresets()
         {
             List<ParameterPreset> presets = ParameterPreset.CreateDefaults();
@@ -158,11 +201,46 @@ namespace LlamaServerManager
             target.Host = "0.0.0.0";
             target.Port = 8123;
             presets[2].ApplyTo(target);
-            Check(target.ContextSize == 32768 && target.BatchSize == 4096, "parameter preset applies performance values");
+            Check(presets[0].ContextSize == 32768 && presets[1].ContextSize == 65536 && presets[2].ContextSize == 131072,
+                "built-in parameter presets provide practical 32K, 64K and 128K context targets");
+            Check(target.ContextSize == 131072 && target.BatchSize == 4096, "parameter preset applies performance values");
             Check(target.ModelPath == @"D:\Models\Keep.gguf" && target.Host == "0.0.0.0" && target.Port == 8123, "parameter preset does not overwrite identity or network settings");
             target.ContextSize = 24576;
             presets[0].Capture(target);
             Check(presets[0].ContextSize == 24576, "parameter preset captures customized values");
+
+            target.ExtraArguments = "--cache-reuse 25";
+            presets[1].ExtraArguments = "--cache-reuse 256";
+            string preserved = target.ExtraArguments;
+            presets[1].ApplyTo(target);
+            target.ExtraArguments = ModelProfile.MergeExtraArguments(preserved, target.ExtraArguments);
+            Check(target.ExtraArguments.Contains("--cache-reuse 25") && target.ExtraArguments.Contains("--cache-reuse 256"),
+                "preset conversion preserves prefix-colliding unknown arguments without substring loss");
+        }
+
+        private static void CheckLlamaServerLocator()
+        {
+            string root = Path.Combine(Path.GetTempPath(), "llamalift-locator-" + Guid.NewGuid().ToString("N"));
+            string bin = Path.Combine(root, "turboquant", "build", "bin");
+            string executable = Path.Combine(bin, "llama-server.exe");
+            try
+            {
+                Directory.CreateDirectory(bin);
+                File.WriteAllText(executable, "test-only");
+                AppConfig config = new AppConfig();
+                config.Profiles.Clear();
+                config.InstalledRuntimes.Clear();
+                config.InstalledRuntimes.Add(new InstalledRuntime { ServerExecutable = executable, InstallDirectory = bin });
+                List<LlamaServerCandidate> found = LlamaServerLocator.FindCandidates(config, new string[] { root }, false);
+                Check(found.Count == 1 && string.Equals(found[0].ExecutablePath, executable, StringComparison.OrdinalIgnoreCase),
+                    "llama-server locator finds nested runtime binaries and deduplicates candidates");
+                Check(found[0].Source == "LlamaLift 已登记运行时" && found[0].InstallDirectory == bin,
+                    "llama-server locator prioritizes registered runtimes and reports the install directory");
+            }
+            finally
+            {
+                try { if (Directory.Exists(root)) Directory.Delete(root, true); } catch { }
+            }
         }
 
         private static void CheckAdaptivePlans()
@@ -196,6 +274,161 @@ namespace LlamaServerManager
             ModelProfile applied = ModelProfile.CreateGenericProfile();
             balanced.ApplyTo(applied);
             Check(applied.ContextSize == balanced.ContextSize && applied.TuningPreset == "Balanced", "adaptive plan applies to model profile");
+
+            ICollection<string> turboTypes = new List<string>(RuntimeCapabilityDetector.StandardCacheTypes()) { "turbo2", "turbo3", "turbo4" };
+            AdaptivePlan turboExtreme = AdaptiveTuner.Recommend(hardware, model, "Extreme", turboTypes);
+            Check(turboExtreme.CacheTypeK == "turbo3" && turboExtreme.CacheTypeV == "turbo3", "TurboQuant runtime receives a TurboQuant-aware extreme plan");
+            Check(turboExtreme.ContextSize >= 131072, "extreme adaptive plan targets at least 128K when model and memory allow");
+
+            AdaptivePlan turbo3Only = AdaptiveTuner.Recommend(hardware, model, "Extreme", new List<string> { "f16", "turbo3" });
+            Check(turbo3Only.CacheTypeK == "turbo3" && turbo3Only.CacheTypeV == "turbo3", "runtime exposing only turbo3 receives a supported KV plan");
+            AdaptivePlan turbo4Only = AdaptiveTuner.Recommend(hardware, model, "Fast", new List<string> { "f16", "turbo4" });
+            Check(turbo4Only.CacheTypeK == "turbo4" && turbo4Only.CacheTypeV == "turbo4", "runtime exposing only turbo4 never receives unsupported q4_0");
+            AdaptivePlan minimal = AdaptiveTuner.Recommend(hardware, model, "Balanced", new List<string> { "f16" });
+            Check(minimal.CacheTypeK == "f16" && minimal.CacheTypeV == "f16", "adaptive KV selection is closed over the runtime capability set");
+        }
+
+        private static void CheckConfigurationMigration()
+        {
+            string legacyJson = "{\"SchemaVersion\":3,\"SelectedProfileId\":\"muse\",\"Profiles\":[{\"Id\":\"muse\",\"Name\":\"Muse profile\",\"ContextSize\":262144,\"CacheTypeK\":\"turbo3\",\"CacheTypeV\":\"turbo3\",\"ModelPath\":\"D:\\\\Models\\\\Muse.gguf\"}]}";
+            AppConfig migrated = ConfigStore.DeserializeAndNormalize(legacyJson);
+            ModelProfile muse = migrated.Profiles[0];
+            Check(muse.Name == "Muse profile" && muse.ContextSize == 262144, "migration preserves existing profile identity and 256K context");
+            Check(muse.CacheTypeK == "turbo3" && muse.CacheTypeV == "turbo3", "migration preserves TurboQuant cache types");
+
+            AppConfig defaults = new AppConfig();
+            defaults.SchemaVersion = 6;
+            ParameterPreset oldFast = new ParameterPreset { Name = "预设 1 · 快速", ContextSize = 4096, CacheTypeK = "q4_0", CacheTypeV = "q4_0", BatchSize = 2048, UbatchSize = 512 };
+            ParameterPreset customized = new ParameterPreset { Name = "我的长上下文", ContextSize = 262144, CacheTypeK = "turbo3", CacheTypeV = "turbo3", BatchSize = 2048, UbatchSize = 512 };
+            defaults.ParameterPresets = new List<ParameterPreset> { oldFast, customized };
+            defaults.SelectedParameterPresetId = oldFast.Id;
+            ConfigStore.NormalizeForTesting(defaults);
+            Check(oldFast.ContextSize == 32768 && oldFast.BuiltInKey == "Fast", "untouched legacy built-in preset is safely upgraded");
+            Check(customized.ContextSize == 262144 && customized.CacheTypeK == "turbo3", "customized legacy preset is never overwritten by migration");
+
+            AppConfig current = new AppConfig();
+            current.Profiles.Clear();
+            ModelProfile currentProfile = ModelProfile.CreateGenericProfile();
+            currentProfile.Id = "same";
+            currentProfile.Name = "Muse profile";
+            currentProfile.ModelPath = @"D:\new.gguf";
+            currentProfile.ContextSize = 65536;
+            current.Profiles.Add(currentProfile);
+            current.SelectedProfileId = currentProfile.Id;
+            AppConfig legacy = new AppConfig();
+            legacy.Profiles.Clear();
+            ModelProfile legacyProfile = ModelProfile.CreateGenericProfile();
+            legacyProfile.Id = "same";
+            legacyProfile.Name = "Muse profile";
+            legacyProfile.ModelPath = @"D:\old.gguf";
+            legacyProfile.ContextSize = 262144;
+            legacyProfile.CacheTypeK = "turbo3";
+            legacyProfile.CacheTypeV = "turbo3";
+            legacy.Profiles.Add(legacyProfile);
+            legacy.SelectedProfileId = legacyProfile.Id;
+            ConfigStore.MergeLegacyForTesting(current, legacy);
+            Check(current.Profiles.Count == 2 && current.Profiles[0].ModelPath == @"D:\new.gguf" && current.SelectedProfileId == "same",
+                "legacy merge never overwrites the current branded profile");
+            Check(current.Profiles[1].Name.Contains("旧版导入") && current.Profiles[1].ContextSize == 262144,
+                "conflicting legacy profile is preserved as a separately identifiable copy");
+
+            AppConfig portCurrent = new AppConfig();
+            portCurrent.Profiles.Clear();
+            ModelProfile portCurrentProfile = ModelProfile.CreateGenericProfile();
+            portCurrentProfile.Id = "port-diff";
+            portCurrentProfile.ModelPath = @"D:\same.gguf";
+            portCurrentProfile.Port = 8080;
+            portCurrent.Profiles.Add(portCurrentProfile);
+            AppConfig portLegacy = new AppConfig();
+            portLegacy.Profiles.Clear();
+            ModelProfile portLegacyProfile = portCurrentProfile.Clone();
+            portLegacyProfile.Port = 9999;
+            portLegacyProfile.ExtraArguments = "--rope-scaling yarn";
+            portLegacy.Profiles.Add(portLegacyProfile);
+            ConfigStore.MergeLegacyForTesting(portCurrent, portLegacy);
+            Check(portCurrent.Profiles.Count == 2 && portCurrent.Profiles[1].Port == 9999 && portCurrent.Profiles[1].ExtraArguments.Contains("rope-scaling"),
+                "migration compares network and advanced fields before declaring profiles equivalent");
+
+            AppConfig presetCurrent = new AppConfig();
+            presetCurrent.ParameterPresets.Clear();
+            ParameterPreset currentPreset = new ParameterPreset { Id = "preset-diff", Name = "兼容预设", Jinja = true, EnableMetrics = true };
+            presetCurrent.ParameterPresets.Add(currentPreset);
+            AppConfig presetLegacy = new AppConfig();
+            presetLegacy.ParameterPresets.Clear();
+            ParameterPreset legacyPreset = currentPreset.CloneAs("兼容预设");
+            legacyPreset.Id = "preset-diff";
+            legacyPreset.Jinja = false;
+            presetLegacy.ParameterPresets.Add(legacyPreset);
+            ConfigStore.MergeLegacyForTesting(presetCurrent, presetLegacy);
+            Check(presetCurrent.ParameterPresets.Count == 2 && !presetCurrent.ParameterPresets[1].Jinja,
+                "migration preserves presets that differ only in advanced switches");
+
+            ModelProfile customCommand = ModelProfile.CreateGenericProfile();
+            customCommand.UseCustomCommand = true;
+            customCommand.CustomCommand = "llama-server.exe --ctx-size 8192 --rope-scaling yarn";
+            customCommand.ExtraArguments = "--rope-scaling yarn";
+            customCommand.ContextSize = 131072;
+            customCommand.ExtraArguments = ModelProfile.MergeExtraArguments(customCommand.ExtraArguments, "--cache-reuse 256");
+            bool converted = customCommand.SwitchToGeneratedCommand();
+            string generated = CommandBuilder.BuildDisplayCommand(customCommand);
+            Check(converted && generated.Contains("--ctx-size \"131072\"") && generated.Contains("--rope-scaling yarn") && generated.Contains("--cache-reuse 256"),
+                "performance synchronization replaces stale custom values while preserving and merging unknown arguments");
+        }
+
+        private static void CheckProcessLifecycle()
+        {
+            ServerProcessManager manager = new ServerProcessManager();
+            try
+            {
+                ModelProfile profile = ModelProfile.CreateGenericProfile();
+                profile.ServerExecutable = Assembly.GetExecutingAssembly().Location;
+                profile.ModelPath = Assembly.GetExecutingAssembly().Location;
+                profile.ExtraArguments = "--fake-stay-alive";
+                manager.Start(profile);
+                Thread.Sleep(500);
+                Check(manager.IsRunning, "long-loading process remains managed without a startup kill timer");
+                Stopwatch call = Stopwatch.StartNew();
+                System.Threading.Tasks.Task<bool>[] concurrentStops = new System.Threading.Tasks.Task<bool>[8];
+                for (int i = 0; i < concurrentStops.Length; i++) concurrentStops[i] = manager.StopAsync(5000);
+                Check(call.ElapsedMilliseconds < 500, "stop request does not block the caller thread");
+                System.Threading.Tasks.Task.WaitAll(concurrentStops);
+                bool allStopped = true;
+                foreach (System.Threading.Tasks.Task<bool> stop in concurrentStops) allStopped &= stop.Result;
+                Check(allStopped && !manager.IsRunning, "concurrent stop requests share one successful lifecycle result");
+
+                int upEvents = 0;
+                int downEvents = 0;
+                manager.RunningChanged += delegate(bool running, int pid)
+                {
+                    if (running) Interlocked.Increment(ref upEvents); else Interlocked.Increment(ref downEvents);
+                };
+                manager.LogReceived += delegate(string message, bool error) { throw new InvalidOperationException("subscriber fault injection"); };
+                manager.Start(profile);
+                Thread.Sleep(300);
+                Check(manager.IsRunning && upEvents == 1, "subscriber failures cannot orphan or hide a started process");
+                Check(manager.StopAsync(5000).Result && downEvents == 1, "one process session emits exactly one stopped transition");
+
+                bool lifecycleStressPassed = true;
+                for (int cycle = 0; cycle < 12; cycle++)
+                {
+                    manager.Start(profile);
+                    System.Threading.Tasks.Task<bool>[] stops = new System.Threading.Tasks.Task<bool>[16];
+                    for (int i = 0; i < stops.Length; i++) stops[i] = manager.StopAsync(5000);
+                    System.Threading.Tasks.Task.WaitAll(stops);
+                    foreach (System.Threading.Tasks.Task<bool> stop in stops) lifecycleStressPassed &= stop.Result;
+                    lifecycleStressPassed &= !manager.IsRunning;
+                }
+                Thread.Sleep(100);
+                Check(lifecycleStressPassed && upEvents == downEvents, "12 rounds x 16 concurrent stops leave no stale session transition");
+            }
+            finally { manager.Dispose(); }
+
+            TcpListener listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            Check(!NetworkHelper.WaitForTcpPortReleaseAsync(port, 400).Result, "port-release gate blocks restart while the old listener remains");
+            listener.Stop();
+            Check(NetworkHelper.WaitForTcpPortReleaseAsync(port, 2000).Result, "port-release gate allows restart after listener cleanup");
         }
 
         private static void CheckRuntimeCatalog()

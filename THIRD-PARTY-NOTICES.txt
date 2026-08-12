@@ -1,4 +1,4 @@
-LlamaLift v0.3.0-dev - Third-Party Notices
+LlamaLift v0.4.0-dev - Third-Party Notices
 =====================================================
 
 llama.cpp (downloaded on demand)

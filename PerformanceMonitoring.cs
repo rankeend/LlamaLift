@@ -11,6 +11,7 @@ using System.Net;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
@@ -44,9 +45,6 @@ namespace LlamaServerManager
     public sealed class SystemPerformanceMonitor : IDisposable
     {
         private readonly object sync = new object();
-        private readonly List<NamedCounter> gpuEngineCounters = new List<NamedCounter>();
-        private readonly List<NamedCounter> gpuMemoryCounters = new List<NamedCounter>();
-        private readonly List<NamedCounter> gpuProcessMemoryCounters = new List<NamedCounter>();
         private readonly List<PerformanceCounter> networkReceiveCounters = new List<PerformanceCounter>();
         private readonly List<PerformanceCounter> networkSendCounters = new List<PerformanceCounter>();
         private PerformanceCounter diskReadCounter;
@@ -61,6 +59,13 @@ namespace LlamaServerManager
         private bool hasCpuBaseline;
         private bool hasProcessBaseline;
         private DateTime countersRefreshedUtc = DateTime.MinValue;
+        private DateTime gpuSampledUtc = DateTime.MinValue;
+        private int gpuSampledProcessId;
+        private double cachedGpuUsage;
+        private double cachedProcessGpuUsage;
+        private double cachedGpuDedicatedBytes;
+        private double cachedGpuSharedBytes;
+        private double cachedProcessGpuDedicatedBytes;
 
         public string CpuName { get; private set; }
         public string GpuName { get; private set; }
@@ -82,7 +87,7 @@ namespace LlamaServerManager
         {
             lock (sync)
             {
-                if ((DateTime.UtcNow - countersRefreshedUtc).TotalSeconds > 30D)
+                if ((DateTime.UtcNow - countersRefreshedUtc).TotalMinutes > 5D)
                     RefreshPerformanceCounters();
 
                 SystemPerformanceSample sample = new SystemPerformanceSample();
@@ -142,9 +147,6 @@ namespace LlamaServerManager
 
         private void RefreshPerformanceCounters()
         {
-            DisposeNamedCounters(gpuEngineCounters);
-            DisposeNamedCounters(gpuMemoryCounters);
-            DisposeNamedCounters(gpuProcessMemoryCounters);
             DisposeCounters(networkReceiveCounters);
             DisposeCounters(networkSendCounters);
             DisposeCounter(ref diskReadCounter);
@@ -186,26 +188,6 @@ namespace LlamaServerManager
             countersRefreshedUtc = DateTime.UtcNow;
         }
 
-        private static void AddNamedCounters(string categoryName, string counterName, List<NamedCounter> target)
-        {
-            try
-            {
-                if (!PerformanceCounterCategory.Exists(categoryName)) return;
-                PerformanceCounterCategory category = new PerformanceCounterCategory(categoryName);
-                foreach (string instance in category.GetInstanceNames())
-                {
-                    try
-                    {
-                        PerformanceCounter counter = new PerformanceCounter(categoryName, counterName, instance, true);
-                        counter.NextValue();
-                        target.Add(new NamedCounter(instance + "|" + counterName, counter));
-                    }
-                    catch { }
-                }
-            }
-            catch { }
-        }
-
         private double ReadCpuUsage()
         {
             ulong idle;
@@ -240,6 +222,12 @@ namespace LlamaServerManager
 
         private void ReadGpu(SystemPerformanceSample sample, int processId)
         {
+            if (gpuSampledProcessId == processId && (DateTime.UtcNow - gpuSampledUtc).TotalSeconds < 2D)
+            {
+                ApplyCachedGpuSample(sample);
+                return;
+            }
+
             Dictionary<string, double> engines = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
             string pidToken = processId > 0 ? "pid_" + processId.ToString(CultureInfo.InvariantCulture) + "_" : string.Empty;
             try
@@ -255,7 +243,7 @@ namespace LlamaServerManager
                         engines.TryGetValue(key, out existing);
                         engines[key] = existing + value;
                         if (pidToken.Length > 0 && name.IndexOf(pidToken, StringComparison.OrdinalIgnoreCase) >= 0)
-                            sample.ProcessGpuUsage += value;
+                            sample.ProcessGpuUsage = Math.Max(sample.ProcessGpuUsage, value);
                     }
                 }
             }
@@ -276,20 +264,38 @@ namespace LlamaServerManager
                 }
             }
             catch { }
-            if (pidToken.Length == 0) return;
-            try
+            if (pidToken.Length > 0)
             {
-                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher("root\\CIMV2", "SELECT Name,DedicatedUsage FROM Win32_PerfFormattedData_GPUPerformanceCounters_GPUProcessMemory"))
+                try
                 {
-                    foreach (ManagementObject item in searcher.Get())
+                    using (ManagementObjectSearcher searcher = new ManagementObjectSearcher("root\\CIMV2", "SELECT Name,DedicatedUsage FROM Win32_PerfFormattedData_GPUPerformanceCounters_GPUProcessMemory"))
                     {
-                        string name = Convert.ToString(item["Name"]);
-                        if (name.IndexOf(pidToken, StringComparison.OrdinalIgnoreCase) >= 0)
-                            sample.ProcessGpuDedicatedBytes += ReadDouble(item["DedicatedUsage"]);
+                        foreach (ManagementObject item in searcher.Get())
+                        {
+                            string name = Convert.ToString(item["Name"]);
+                            if (name.IndexOf(pidToken, StringComparison.OrdinalIgnoreCase) >= 0)
+                                sample.ProcessGpuDedicatedBytes += ReadDouble(item["DedicatedUsage"]);
+                        }
                     }
                 }
+                catch { }
             }
-            catch { }
+            gpuSampledUtc = DateTime.UtcNow;
+            gpuSampledProcessId = processId;
+            cachedGpuUsage = sample.GpuUsage;
+            cachedProcessGpuUsage = sample.ProcessGpuUsage;
+            cachedGpuDedicatedBytes = sample.GpuDedicatedBytes;
+            cachedGpuSharedBytes = sample.GpuSharedBytes;
+            cachedProcessGpuDedicatedBytes = sample.ProcessGpuDedicatedBytes;
+        }
+
+        private void ApplyCachedGpuSample(SystemPerformanceSample sample)
+        {
+            sample.GpuUsage = cachedGpuUsage;
+            sample.ProcessGpuUsage = cachedProcessGpuUsage;
+            sample.GpuDedicatedBytes = cachedGpuDedicatedBytes;
+            sample.GpuSharedBytes = cachedGpuSharedBytes;
+            sample.ProcessGpuDedicatedBytes = cachedProcessGpuDedicatedBytes;
         }
 
         private static double ReadDouble(object value)
@@ -365,22 +371,15 @@ namespace LlamaServerManager
 
         public void Dispose()
         {
-            lock (sync)
+            if (!Monitor.TryEnter(sync, 250)) return;
+            try
             {
-                DisposeNamedCounters(gpuEngineCounters);
-                DisposeNamedCounters(gpuMemoryCounters);
-                DisposeNamedCounters(gpuProcessMemoryCounters);
                 DisposeCounters(networkReceiveCounters);
                 DisposeCounters(networkSendCounters);
                 DisposeCounter(ref diskReadCounter);
                 DisposeCounter(ref diskWriteCounter);
             }
-        }
-
-        private static void DisposeNamedCounters(List<NamedCounter> counters)
-        {
-            foreach (NamedCounter counter in counters) try { counter.Counter.Dispose(); } catch { }
-            counters.Clear();
+            finally { Monitor.Exit(sync); }
         }
 
         private static void DisposeCounters(List<PerformanceCounter> counters)
@@ -393,13 +392,6 @@ namespace LlamaServerManager
         {
             if (counter != null) try { counter.Dispose(); } catch { }
             counter = null;
-        }
-
-        private sealed class NamedCounter
-        {
-            public string Name { get; private set; }
-            public PerformanceCounter Counter { get; private set; }
-            public NamedCounter(string name, PerformanceCounter counter) { Name = name; Counter = counter; }
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -748,7 +740,7 @@ namespace LlamaServerManager
             }
             if (points.Count < 2)
             {
-                using (SolidBrush empty = new SolidBrush(muted)) g.DrawString("采样后将在这里显示最近 90 秒趋势", Font, empty, plot.Left, plot.Top + 14F);
+                using (SolidBrush empty = new SolidBrush(muted)) g.DrawString("采样后将在这里显示最近 90 个采样点", Font, empty, plot.Left, plot.Top + 14F);
                 return;
             }
 

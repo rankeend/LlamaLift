@@ -45,6 +45,7 @@ $scenarios = @(
     @{ Name="Light-Logs-Minimum-Bottom"; Theme="Light"; Page="logs"; Width=940; Height=600; Scale="1.0"; Scroll="bottom" },
     @{ Name="Dark-Settings-Minimum-Bottom"; Theme="Dark"; Page="settings"; Width=940; Height=600; Scale="1.0"; Scroll="bottom" },
     @{ Name="Light-Settings-125pct"; Theme="Light"; Page="settings"; Width=1500; Height=950; Scale="1.25"; Scroll="top" },
+    @{ Name="Dark-Dashboard-200pct"; Theme="Dark"; Page="dashboard"; Width=1880; Height=1200; Scale="2.0"; Scroll="top" },
     @{ Name="Dark-Profiles-150pct"; Theme="Dark"; Page="profiles"; Width=1700; Height=1000; Scale="1.5"; Scroll="top" },
     @{ Name="Light-Monitoring-150pct"; Theme="Light"; Page="monitoring"; Width=1700; Height=1000; Scale="1.5"; Scroll="top" },
     @{ Name="Light-Profiles-175pct"; Theme="Light"; Page="profiles"; Width=1645; Height=1050; Scale="1.75"; Scroll="top" },
@@ -54,7 +55,7 @@ $images = @()
 $uiError = Join-Path $testDir "ui-error.txt"
 foreach ($scenario in $scenarios) {
     if (Test-Path -LiteralPath $uiError) { Remove-Item -LiteralPath $uiError -Force }
-    $image = Join-Path $testDir ("LlamaLift-v0.3-" + $scenario.Name + ".png")
+    $image = Join-Path $testDir ("LlamaLift-v0.4-" + $scenario.Name + ".png")
     & (Join-Path $testDir "UiSmokeTest.exe") $image $scenario.Theme $scenario.Page $scenario.Width $scenario.Height $scenario.Scale $scenario.Scroll
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $image)) { throw ("UI render test failed: " + $scenario.Name) }
     $images += $image

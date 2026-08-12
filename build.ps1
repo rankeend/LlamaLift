@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 $projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$version = "0.3.0-dev"
+$version = "0.4.0-dev"
 $distDir = Join-Path $projectDir "dist"
 $installerDistDir = Join-Path $projectDir "dist-installer"
 $releaseDir = Join-Path $projectDir "release"

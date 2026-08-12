@@ -13,6 +13,192 @@ using System.Web.Script.Serialization;
 
 namespace LlamaServerManager
 {
+    public sealed class LlamaServerCandidate
+    {
+        public string ExecutablePath { get; set; }
+        public string Source { get; set; }
+        public int Score { get; set; }
+        public DateTime LastWriteTimeUtc { get; set; }
+
+        public string InstallDirectory
+        {
+            get
+            {
+                try { return Path.GetDirectoryName(ExecutablePath) ?? string.Empty; }
+                catch { return string.Empty; }
+            }
+        }
+    }
+
+    public static class LlamaServerLocator
+    {
+        private const int MaximumDirectoriesPerRoot = 1200;
+        private const int MaximumDepth = 6;
+
+        public static List<LlamaServerCandidate> FindCandidates(AppConfig config)
+        {
+            return FindCandidates(config, null, true);
+        }
+
+        internal static List<LlamaServerCandidate> FindCandidates(AppConfig config, IEnumerable<string> extraRoots, bool includeSystemLocations)
+        {
+            Dictionary<string, LlamaServerCandidate> candidates = new Dictionary<string, LlamaServerCandidate>(StringComparer.OrdinalIgnoreCase);
+            if (config != null)
+            {
+                if (config.InstalledRuntimes != null)
+                    foreach (InstalledRuntime runtime in config.InstalledRuntimes)
+                        AddCandidate(candidates, runtime == null ? null : runtime.ServerExecutable, "LlamaLift 已登记运行时", 100);
+                if (config.Profiles != null)
+                    foreach (ModelProfile profile in config.Profiles)
+                        AddCandidate(candidates, profile == null ? null : profile.ServerExecutable, "现有模型配置", 95);
+            }
+
+            if (extraRoots != null)
+                foreach (string root in extraRoots) SearchRoot(candidates, root, "指定目录", 88);
+
+            if (includeSystemLocations)
+            {
+                AddPathCandidates(candidates);
+                SearchRoot(candidates, ConfigStore.RuntimeDirectory, "LlamaLift 运行时目录", 92);
+                SearchRoot(candidates, AppDomain.CurrentDomain.BaseDirectory, "应用程序目录", 84);
+                foreach (SearchLocation location in CommonLocations())
+                    SearchRoot(candidates, location.Path, location.Source, location.Score);
+            }
+
+            List<LlamaServerCandidate> result = candidates.Values.ToList();
+            result.Sort(delegate(LlamaServerCandidate left, LlamaServerCandidate right)
+            {
+                int score = right.Score.CompareTo(left.Score);
+                if (score != 0) return score;
+                return right.LastWriteTimeUtc.CompareTo(left.LastWriteTimeUtc);
+            });
+            return result;
+        }
+
+        private static void AddPathCandidates(Dictionary<string, LlamaServerCandidate> candidates)
+        {
+            string pathValue = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+            foreach (string raw in pathValue.Split(Path.PathSeparator))
+            {
+                string directory = raw == null ? string.Empty : raw.Trim().Trim('"');
+                if (directory.Length == 0) continue;
+                AddCandidate(candidates, Path.Combine(directory, "llama-server.exe"), "系统 PATH", 94);
+            }
+        }
+
+        private static IEnumerable<SearchLocation> CommonLocations()
+        {
+            List<SearchLocation> roots = new List<SearchLocation>();
+            string user = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            AddNamedRoots(roots, Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "桌面常用目录", 78);
+            AddNamedRoots(roots, Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "文档常用目录", 76);
+            AddNamedRoots(roots, string.IsNullOrWhiteSpace(user) ? string.Empty : Path.Combine(user, "Downloads"), "下载常用目录", 77);
+            AddNamedRoots(roots, Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Program Files", 74);
+            AddNamedRoots(roots, Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Program Files (x86)", 72);
+            AddNamedRoots(roots, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs"), "用户程序目录", 80);
+
+            try
+            {
+                foreach (DriveInfo drive in DriveInfo.GetDrives())
+                {
+                    if (!drive.IsReady || drive.DriveType != DriveType.Fixed) continue;
+                    string root = drive.RootDirectory.FullName;
+                    string[] names = { "llama.cpp", "llama-cpp", "llama", "LLM\\llama.cpp", "AI\\llama.cpp", "tools\\llama.cpp" };
+                    foreach (string name in names) roots.Add(new SearchLocation(Path.Combine(root, name), "磁盘常用安装目录", 82));
+                }
+            }
+            catch { }
+            return roots;
+        }
+
+        private static void AddNamedRoots(List<SearchLocation> roots, string parent, string source, int score)
+        {
+            if (string.IsNullOrWhiteSpace(parent) || !Directory.Exists(parent)) return;
+            string[] names = { "llama.cpp", "llama-cpp", "llama", "LlamaLift" };
+            foreach (string name in names) roots.Add(new SearchLocation(Path.Combine(parent, name), source, score));
+            try
+            {
+                foreach (string directory in Directory.GetDirectories(parent, "*llama*", SearchOption.TopDirectoryOnly))
+                    roots.Add(new SearchLocation(directory, source, score));
+            }
+            catch { }
+        }
+
+        private static void SearchRoot(Dictionary<string, LlamaServerCandidate> candidates, string root, string source, int score)
+        {
+            if (string.IsNullOrWhiteSpace(root)) return;
+            if (File.Exists(root))
+            {
+                AddCandidate(candidates, root, source, score);
+                return;
+            }
+            if (!Directory.Exists(root)) return;
+
+            Queue<SearchDirectory> pending = new Queue<SearchDirectory>();
+            pending.Enqueue(new SearchDirectory(root, 0));
+            int visited = 0;
+            while (pending.Count > 0 && visited++ < MaximumDirectoriesPerRoot)
+            {
+                SearchDirectory current = pending.Dequeue();
+                try
+                {
+                    AddCandidate(candidates, Path.Combine(current.Path, "llama-server.exe"), source, score);
+                    if (current.Depth >= MaximumDepth) continue;
+                    foreach (string child in Directory.GetDirectories(current.Path))
+                    {
+                        try
+                        {
+                            FileAttributes attributes = File.GetAttributes(child);
+                            if ((attributes & FileAttributes.ReparsePoint) != 0) continue;
+                        }
+                        catch { continue; }
+                        pending.Enqueue(new SearchDirectory(child, current.Depth + 1));
+                    }
+                }
+                catch { }
+            }
+        }
+
+        private static void AddCandidate(Dictionary<string, LlamaServerCandidate> candidates, string path, string source, int score)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return;
+            try
+            {
+                string full = Path.GetFullPath(path.Trim().Trim('"'));
+                if (!File.Exists(full) || !string.Equals(Path.GetFileName(full), "llama-server.exe", StringComparison.OrdinalIgnoreCase)) return;
+                LlamaServerCandidate existing;
+                if (candidates.TryGetValue(full, out existing))
+                {
+                    if (score > existing.Score) { existing.Score = score; existing.Source = source; }
+                    return;
+                }
+                candidates[full] = new LlamaServerCandidate
+                {
+                    ExecutablePath = full,
+                    Source = source,
+                    Score = score,
+                    LastWriteTimeUtc = File.GetLastWriteTimeUtc(full)
+                };
+            }
+            catch { }
+        }
+
+        private sealed class SearchDirectory
+        {
+            public string Path { get; private set; }
+            public int Depth { get; private set; }
+            public SearchDirectory(string path, int depth) { Path = path; Depth = depth; }
+        }
+
+        private sealed class SearchLocation
+        {
+            public string Path { get; private set; }
+            public string Source { get; private set; }
+            public int Score { get; private set; }
+            public SearchLocation(string path, string source, int score) { Path = path; Source = source; Score = score; }
+        }
+    }
+
     public sealed class RuntimeDownload
     {
         public string Name { get; set; }

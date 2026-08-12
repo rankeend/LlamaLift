@@ -127,8 +127,12 @@ namespace LlamaServerManager
                 errors.Add("找不到模型文件：" + profile.ModelPath);
             if (!string.IsNullOrWhiteSpace(profile.MmprojPath) && !File.Exists(profile.MmprojPath))
                 errors.Add("找不到 mmproj 文件：" + profile.MmprojPath);
-            if (!string.IsNullOrWhiteSpace(profile.ApiKeyFile) && !File.Exists(profile.ApiKeyFile))
-                errors.Add("找不到 API Key 文件：" + profile.ApiKeyFile);
+            if (!string.IsNullOrWhiteSpace(profile.ApiKeyFile))
+            {
+                string apiKeyError;
+                if (!ApiKeyFileSupport.TryOpenForRead(profile.ApiKeyFile, out apiKeyError))
+                    errors.Add("API Key 文件无法读取：" + apiKeyError + "。请在“API Key 管理”中重新选择或新建密钥。");
+            }
             if (profile.Port < 1 || profile.Port > 65535)
                 errors.Add("端口必须在 1 到 65535 之间。");
             if (profile.ContextSize < 0)
@@ -167,7 +171,13 @@ namespace LlamaServerManager
     {
         private Process process;
         private readonly object sync = new object();
+        private readonly object completionSync = new object();
+        private readonly Queue<string> recentOutput = new Queue<string>();
         private bool expectedStop;
+        private bool stopping;
+        private bool starting;
+        private Task<bool> stopTask;
+        private string activeRuntimeApiKeyPath = string.Empty;
 
         public event Action<string, bool> LogReceived;
         public event Action<bool, int> RunningChanged;
@@ -195,17 +205,42 @@ namespace LlamaServerManager
             }
         }
 
+        public bool IsStopping
+        {
+            get { lock (sync) return stopping; }
+        }
+
         public void Start(ModelProfile profile)
         {
+            Process created;
+            bool apiKeyBridged = false;
+            string launchApiKeyPath = string.Empty;
+            string launchExecutable = CommandBuilder.BuildLaunchExecutable(profile);
+            string launchArguments = CommandBuilder.BuildLaunchArguments(profile);
+            if (!string.IsNullOrWhiteSpace(profile.ApiKeyFile))
+            {
+                launchApiKeyPath = ApiKeyFileSupport.PrepareForLaunch(profile.ApiKeyFile, out apiKeyBridged);
+                launchArguments = ReplaceApiKeyFileArgument(launchArguments, launchApiKeyPath);
+            }
             lock (sync)
             {
+                if (stopping || starting) throw new InvalidOperationException("llama-server 正在切换状态，请等待进程和端口释放。");
                 if (process != null && !HasExited(process))
                     throw new InvalidOperationException("llama-server 已经在运行。");
 
+                if (process != null)
+                {
+                    try { process.Dispose(); } catch { }
+                    process = null;
+                }
+
+                starting = true;
                 expectedStop = false;
+                stopTask = null;
+                recentOutput.Clear();
                 ProcessStartInfo psi = new ProcessStartInfo();
-                psi.FileName = CommandBuilder.BuildLaunchExecutable(profile);
-                psi.Arguments = CommandBuilder.BuildLaunchArguments(profile);
+                psi.FileName = launchExecutable;
+                psi.Arguments = launchArguments;
                 string workingDirectory = Path.GetDirectoryName(psi.FileName);
                 psi.WorkingDirectory = string.IsNullOrWhiteSpace(workingDirectory) ? AppDomain.CurrentDomain.BaseDirectory : workingDirectory;
                 psi.UseShellExecute = false;
@@ -215,37 +250,116 @@ namespace LlamaServerManager
                 psi.StandardOutputEncoding = Encoding.UTF8;
                 psi.StandardErrorEncoding = Encoding.UTF8;
 
-                process = new Process();
-                process.StartInfo = psi;
-                process.EnableRaisingEvents = true;
-                process.OutputDataReceived += OnOutputDataReceived;
-                process.ErrorDataReceived += OnErrorDataReceived;
-                process.Exited += OnExited;
-
-                Emit("准备启动：" + CommandBuilder.BuildSafeDisplayCommand(profile), false);
-                if (!process.Start())
-                    throw new InvalidOperationException("无法启动 llama-server 进程。");
-
-                process.BeginOutputReadLine();
-                process.BeginErrorReadLine();
-                Emit("进程已启动，PID " + process.Id, false);
-                RaiseRunningChanged(true, process.Id);
+                created = new Process();
+                created.StartInfo = psi;
+                created.EnableRaisingEvents = true;
+                created.OutputDataReceived += OnOutputDataReceived;
+                created.ErrorDataReceived += OnErrorDataReceived;
+                created.Exited += OnExited;
+                process = created;
+                activeRuntimeApiKeyPath = apiKeyBridged ? launchApiKeyPath : string.Empty;
             }
+
+            bool started = false;
+            Emit("准备启动：" + CommandBuilder.BuildSafeDisplayCommand(profile), false);
+            if (apiKeyBridged) Emit("API Key 位于含非 ASCII 字符的目录，已使用仅供本次启动的兼容路径；密钥内容不会写入日志。", false);
+            try
+            {
+                if (!created.Start()) throw new InvalidOperationException("无法启动 llama-server 进程。");
+                started = true;
+                created.BeginOutputReadLine();
+                created.BeginErrorReadLine();
+                int pid = created.Id;
+                lock (sync)
+                {
+                    if (!ReferenceEquals(process, created) || HasExited(created))
+                        throw new InvalidOperationException("llama-server 在初始化完成前退出。");
+                    starting = false;
+                }
+                Emit("进程已启动，PID " + pid + "；正在加载模型，管理器不会因加载时间较长而自动停止。", false);
+                RaiseRunningChanged(true, pid);
+            }
+            catch
+            {
+                created.Exited -= OnExited;
+                created.OutputDataReceived -= OnOutputDataReceived;
+                created.ErrorDataReceived -= OnErrorDataReceived;
+                if (started && !HasExited(created))
+                {
+                    try { created.Kill(); } catch { }
+                    try { created.WaitForExit(5000); } catch { }
+                }
+                lock (sync)
+                {
+                    if (ReferenceEquals(process, created)) process = null;
+                    if (apiKeyBridged && string.Equals(activeRuntimeApiKeyPath, launchApiKeyPath, StringComparison.OrdinalIgnoreCase))
+                        activeRuntimeApiKeyPath = string.Empty;
+                    starting = false;
+                    stopping = false;
+                }
+                try { created.Dispose(); } catch { }
+                if (apiKeyBridged) ApiKeyFileSupport.ReleaseRuntimeCopy(launchApiKeyPath);
+                throw;
+            }
+        }
+
+        internal static string ReplaceApiKeyFileArgument(string arguments, string replacementPath)
+        {
+            if (string.IsNullOrWhiteSpace(arguments) || string.IsNullOrWhiteSpace(replacementPath)) return arguments ?? string.Empty;
+            List<string> errors = new List<string>();
+            List<string> tokens = CommandParser.Tokenize(arguments, errors);
+            if (errors.Count > 0) return arguments;
+            bool replaced = false;
+            for (int i = 0; i < tokens.Count; i++)
+            {
+                if (string.Equals(tokens[i], "--api-key-file", StringComparison.OrdinalIgnoreCase) && i + 1 < tokens.Count)
+                {
+                    tokens[i + 1] = replacementPath;
+                    replaced = true;
+                    i++;
+                }
+                else if (tokens[i].StartsWith("--api-key-file=", StringComparison.OrdinalIgnoreCase))
+                {
+                    tokens[i] = "--api-key-file=" + replacementPath;
+                    replaced = true;
+                }
+            }
+            if (!replaced) return arguments;
+            List<string> rebuilt = new List<string>();
+            foreach (string token in tokens)
+                rebuilt.Add(token.IndexOfAny(new char[] { ' ', '\t', '"' }) >= 0 ? CommandBuilder.Quote(token) : token);
+            return string.Join(" ", rebuilt.ToArray());
         }
 
         public void Stop()
         {
-            Process current;
+            StopAsync(15000).GetAwaiter().GetResult();
+        }
+
+        public Task<bool> StopAsync(int timeoutMilliseconds)
+        {
             lock (sync)
             {
-                current = process;
+                if (stopTask != null && !stopTask.IsCompleted) return stopTask;
+                if (process == null)
+                {
+                    stopping = false;
+                    return Task.FromResult(true);
+                }
+                Process target = process;
                 expectedStop = true;
+                stopping = true;
+                stopTask = Task.Run<bool>(delegate { return StopCore(target, Math.Max(1000, timeoutMilliseconds)); });
+                return stopTask;
             }
+        }
 
-            if (current == null || HasExited(current))
+        private bool StopCore(Process current, int timeoutMilliseconds)
+        {
+            if (HasExited(current))
             {
-                RaiseRunningChanged(false, 0);
-                return;
+                CompleteExit(current);
+                return true;
             }
 
             int pid = 0;
@@ -255,16 +369,33 @@ namespace LlamaServerManager
             try
             {
                 current.Kill();
-                if (!current.WaitForExit(10000))
-                    Emit("停止进程超时，请在任务管理器确认。", true);
+                Stopwatch wait = Stopwatch.StartNew();
+                while (wait.ElapsedMilliseconds < timeoutMilliseconds)
+                {
+                    lock (sync)
+                        if (!ReferenceEquals(process, current)) return true;
+                    if (HasExited(current)) break;
+                    Thread.Sleep(25);
+                }
+                lock (sync)
+                {
+                    if (!ReferenceEquals(process, current)) return true;
+                }
+                if (!HasExited(current))
+                {
+                    Emit("停止进程超时：旧进程可能仍持有端口或显存。已禁止立即重启，请在任务管理器确认 PID " + pid + "。", true);
+                    return false;
+                }
+                try { current.WaitForExit(); } catch { }
+                CompleteExit(current);
+                lock (sync) return !ReferenceEquals(process, current);
             }
             catch (Exception ex)
             {
+                lock (sync)
+                    if (!ReferenceEquals(process, current)) return true;
                 Emit("停止失败：" + ex.Message, true);
-            }
-            finally
-            {
-                RaiseRunningChanged(false, 0);
+                return false;
             }
         }
 
@@ -310,20 +441,85 @@ namespace LlamaServerManager
 
         private void OnOutputDataReceived(object sender, DataReceivedEventArgs e)
         {
-            if (e.Data != null) Emit(e.Data, false);
+            if (e.Data != null && IsCurrentProcess(sender as Process)) { RememberOutput(e.Data); Emit(e.Data, false); }
         }
 
         private void OnErrorDataReceived(object sender, DataReceivedEventArgs e)
         {
-            if (e.Data != null) Emit(e.Data, IsErrorLine(e.Data));
+            if (e.Data != null && IsCurrentProcess(sender as Process)) { RememberOutput(e.Data); Emit(e.Data, IsErrorLine(e.Data)); }
+        }
+
+        private bool IsCurrentProcess(Process candidate)
+        {
+            lock (sync) return candidate != null && ReferenceEquals(process, candidate);
         }
 
         private void OnExited(object sender, EventArgs e)
         {
-            int code = -1;
-            try { code = ((Process)sender).ExitCode; } catch { }
-            Emit((expectedStop ? "进程已停止" : "进程意外退出") + "，退出代码 " + code, !expectedStop && code != 0);
-            RaiseRunningChanged(false, 0);
+            CompleteExit(sender as Process);
+        }
+
+        private void CompleteExit(Process exited)
+        {
+            if (exited == null) return;
+            string runtimeKeyToRelease = string.Empty;
+            lock (completionSync)
+            {
+                bool wasExpected;
+                int code = -1;
+                string diagnosis = string.Empty;
+                lock (sync)
+                {
+                    if (!ReferenceEquals(process, exited) || !HasExited(exited)) return;
+                    stopping = true;
+                    starting = false;
+                    wasExpected = expectedStop;
+                    try { code = exited.ExitCode; } catch { }
+                    if (!wasExpected) diagnosis = DiagnoseOutputSnapshot(recentOutput.ToArray());
+                }
+                Emit((wasExpected ? "进程已停止" : "进程意外退出") + "，退出代码 " + code, !wasExpected && code != 0);
+                if (!string.IsNullOrWhiteSpace(diagnosis)) Emit("启动失败诊断：" + diagnosis, true);
+                RaiseRunningChanged(false, 0);
+
+                lock (sync)
+                {
+                    if (!ReferenceEquals(process, exited)) return;
+                    process = null;
+                    runtimeKeyToRelease = activeRuntimeApiKeyPath;
+                    activeRuntimeApiKeyPath = string.Empty;
+                    stopping = false;
+                    exited.OutputDataReceived -= OnOutputDataReceived;
+                    exited.ErrorDataReceived -= OnErrorDataReceived;
+                    exited.Exited -= OnExited;
+                }
+                try { exited.Dispose(); } catch { }
+                ApiKeyFileSupport.ReleaseRuntimeCopy(runtimeKeyToRelease);
+            }
+        }
+
+        private void RememberOutput(string line)
+        {
+            lock (sync)
+            {
+                recentOutput.Enqueue(line);
+                while (recentOutput.Count > 120) recentOutput.Dequeue();
+            }
+        }
+
+        private static string DiagnoseOutputSnapshot(string[] lines)
+        {
+            string text = string.Join("\n", lines ?? new string[0]).ToLowerInvariant();
+            if (text.Contains("api-key-file") && (text.Contains("failed to open") || text.Contains("cannot open") || text.Contains("access denied")))
+                return "API Key 文件无法读取。请在“API Key 管理”中重新选择或新建密钥；若路径含中文或特殊字符，LlamaLift 会在启动时自动使用兼容路径。";
+            if (text.Contains("out of memory") || text.Contains("cuda error") || text.Contains("failed to allocate") || text.Contains("alloc failed"))
+                return "显存或内存不足。请降低上下文、并发、GPU 层或 KV Cache 精度后重试。";
+            if (text.Contains("unknown argument") || text.Contains("invalid argument") || text.Contains("unrecognized option"))
+                return "当前 llama-server 不支持某个启动参数。请在参数工作台运行预检，或用该运行时的 --help 核对参数。";
+            if (text.Contains("address already in use") || text.Contains("bind") && text.Contains("failed"))
+                return "端口绑定失败。旧进程或其他服务仍在占用端口，请等待释放或更换端口。";
+            if (text.Contains("failed to load model") || text.Contains("error loading model") || text.Contains("failed to open"))
+                return "模型加载失败。请检查 GGUF 完整性、模型路径、分片文件和运行时兼容性。";
+            return "llama-server 在模型就绪前退出。请查看退出前最后几行日志；管理器不会因加载时间过长主动终止进程。";
         }
 
         private static bool IsErrorLine(string line)
@@ -340,13 +536,17 @@ namespace LlamaServerManager
         private void Emit(string message, bool error)
         {
             Action<string, bool> handler = LogReceived;
-            if (handler != null) handler(message, error);
+            if (handler == null) return;
+            foreach (Action<string, bool> subscriber in handler.GetInvocationList())
+                try { subscriber(message, error); } catch { }
         }
 
         private void RaiseRunningChanged(bool running, int pid)
         {
             Action<bool, int> handler = RunningChanged;
-            if (handler != null) handler(running, pid);
+            if (handler == null) return;
+            foreach (Action<bool, int> subscriber in handler.GetInvocationList())
+                try { subscriber(running, pid); } catch { }
         }
 
         public void Dispose()
@@ -355,6 +555,11 @@ namespace LlamaServerManager
             lock (sync) { current = process; }
             if (current != null)
             {
+                if (!HasExited(current))
+                {
+                    try { current.Kill(); } catch { }
+                    try { current.WaitForExit(3000); } catch { }
+                }
                 try { current.Dispose(); } catch { }
             }
         }
@@ -568,6 +773,32 @@ namespace LlamaServerManager
 
     public static class NetworkHelper
     {
+        public static bool IsTcpPortInUse(int port)
+        {
+            if (port < 1 || port > 65535) return false;
+            try
+            {
+                foreach (IPEndPoint endpoint in IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners())
+                    if (endpoint.Port == port) return true;
+            }
+            catch { }
+            return false;
+        }
+
+        public static Task<bool> WaitForTcpPortReleaseAsync(int port, int timeoutMilliseconds)
+        {
+            return Task.Factory.StartNew<bool>(delegate
+            {
+                Stopwatch timer = Stopwatch.StartNew();
+                while (timer.ElapsedMilliseconds < timeoutMilliseconds)
+                {
+                    if (!IsTcpPortInUse(port)) return true;
+                    Thread.Sleep(200);
+                }
+                return !IsTcpPortInUse(port);
+            });
+        }
+
         public static string GetPreferredLanIPv4()
         {
             string fallback = string.Empty;
