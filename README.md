@@ -7,13 +7,13 @@
 面向 Windows 的 llama.cpp 桌面控制中心。<br>
 从运行时安装、硬件识别和自适应调参，到服务管理、性能监测与 API 接入，都在一个界面完成。
 
-[![Version](https://img.shields.io/badge/version-v1.0.0--preview-007AFF?style=flat-square)](https://github.com/rankeend/llama-cpp-windows-launcher/releases/tag/v1.0.0-preview)
+[![Version](https://img.shields.io/badge/version-v1.0.0--preview-007AFF?style=flat-square)](https://github.com/rankeend/LlamaLift/releases/tag/v1.0.0-preview)
 ![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-1D1D1F?style=flat-square&logo=windows11&logoColor=white)
 ![.NET Framework](https://img.shields.io/badge/.NET%20Framework-4.8-512BD4?style=flat-square&logo=dotnet&logoColor=white)
 ![llama.cpp](https://img.shields.io/badge/runtime-llama.cpp-30B85A?style=flat-square)
 ![Tests](https://img.shields.io/badge/offline%20checks-106%20passed-30B85A?style=flat-square)
 
-**[下载 v1.0 Preview](https://github.com/rankeend/llama-cpp-windows-launcher/releases/tag/v1.0.0-preview)** · [快速开始](#快速开始) · [查看更新](CHANGELOG.md) · [内测清单](docs/INTERNAL-TESTING-v1.0-preview.md)
+**[下载 v1.0 Preview](https://github.com/rankeend/LlamaLift/releases/tag/v1.0.0-preview)** · [快速开始](#快速开始) · [查看更新](CHANGELOG.md) · [内测清单](docs/INTERNAL-TESTING-v1.0-preview.md)
 
 > 当前为最后一个私有内测预览版本。下一阶段将进入公开测试。
 
@@ -76,7 +76,7 @@ LlamaLift 把这条链路整理成一个可见、可保存、可验证的工作�
 
 ### 1. 下载
 
-从 [v1.0.0-preview Release](https://github.com/rankeend/llama-cpp-windows-launcher/releases/tag/v1.0.0-preview) 获取：
+从 [v1.0.0-preview Release](https://github.com/rankeend/LlamaLift/releases/tag/v1.0.0-preview) 获取：
 
 - `LlamaLift-v1.0.0-preview-Setup.exe`：安装版。
 - `LlamaLift-v1.0.0-preview-portable-win-x64.zip`：解压即用的便携版。
@@ -181,8 +181,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\ui-test.ps1
 
 ## 致谢
 
+- **RankeeNd-Masen Hu**：作者与维护者。
+- **Hongbin Sun**：项目支持者。
+
 - [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp)：本地推理运行时与 HTTP Server。
 - [AntdUI](https://github.com/AntdUI/AntdUI)：WinForms UI 组件，Apache License 2.0。
 - [Inno Setup](https://jrsoftware.org/isinfo.php)：Windows 安装包构建工具。
 
 第三方组件、许可证与分发说明见 [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt)。
+项目成员信息见 [AUTHORS.md](AUTHORS.md)。

@@ -57,3 +57,9 @@ LlamaLift v1.0.0-preview
 - 支持官方 Windows x64 CPU、CUDA、Vulkan、SYCL 和 HIP 构建
 
 第三方组件和许可证信息见 THIRD-PARTY-NOTICES.txt。
+
+项目成员
+--------
+- 作者与维护者：RankeeNd-Masen Hu
+- 项目支持者：Hongbin Sun
+- 完整信息见 AUTHORS.md

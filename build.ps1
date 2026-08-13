@@ -71,6 +71,7 @@ if ($LASTEXITCODE -ne 0) {
 
 Copy-Item -LiteralPath $antdDll -Destination $distDir -Force
 Copy-Item -LiteralPath (Join-Path $projectDir "README.txt") -Destination $distDir -Force
+Copy-Item -LiteralPath (Join-Path $projectDir "AUTHORS.md") -Destination $distDir -Force
 Copy-Item -LiteralPath (Join-Path $projectDir "THIRD-PARTY-NOTICES.txt") -Destination $distDir -Force
 New-Item -ItemType File -Path (Join-Path $distDir "portable.flag") -Force | Out-Null
 

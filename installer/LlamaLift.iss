@@ -1,6 +1,6 @@
 #define MyAppName "LlamaLift"
 #define MyAppVersion "1.0.0"
-#define MyAppPublisher "LlamaLift Community"
+#define MyAppPublisher "RankeeNd-Masen Hu"
 #define MyAppExeName "LlamaLift.exe"
 
 [Setup]

@@ -1520,8 +1520,8 @@ namespace LlamaServerManager
             page.RowStyles.Add(new RowStyle(SizeType.Absolute, 270F));
             page.RowStyles.Add(new RowStyle(SizeType.Absolute, 170F));
             page.RowStyles.Add(new RowStyle(SizeType.Absolute, 150F));
-            page.RowStyles.Add(new RowStyle(SizeType.Absolute, 190F));
-            page.AutoScrollMinSize = new Size(0, 824);
+            page.RowStyles.Add(new RowStyle(SizeType.Absolute, 250F));
+            page.AutoScrollMinSize = new Size(0, 884);
 
             APanel appearance = NewCard();
             appearance.Margin = new Padding(0, 0, 0, 14);
@@ -1619,7 +1619,7 @@ namespace LlamaServerManager
             Label aboutTitle = MakeLabel("LlamaLift  " + AppVersion.DisplayVersion, 14F, FontStyle.Bold);
             aboutTitle.Dock = DockStyle.Fill;
             aboutTitle.TextAlign = ContentAlignment.MiddleLeft;
-            Label aboutBody = MakeMutedLabel("本地模型，一键起飞。LlamaLift 可安装 llama.cpp 运行时、自适应本机参数、管理模型服务与 API Key，并实时观察系统和推理性能。软件不捆绑模型文件或用户密钥。\n界面基于 AntdUI（Apache-2.0）；安装包由 Inno Setup 构建。", 9.5F);
+            Label aboutBody = MakeMutedLabel("本地模型，一键起飞。LlamaLift 可安装 llama.cpp 运行时、自适应本机参数、管理模型服务与 API Key，并实时观察系统和推理性能。软件不捆绑模型文件或用户密钥。\n界面基于 AntdUI（Apache-2.0）；安装包由 Inno Setup 构建。\n\n作者与维护者：RankeeNd-Masen Hu\n项目支持者：Hongbin Sun", 9.5F);
             aboutBody.Dock = DockStyle.Fill;
             aboutBody.AutoSize = false;
             aboutBody.TextAlign = ContentAlignment.TopLeft;

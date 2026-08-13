@@ -5,9 +5,9 @@ using System.Windows.Forms;
 
 [assembly: AssemblyTitle("LlamaLift")]
 [assembly: AssemblyDescription("本地模型，一键起飞。")]
-[assembly: AssemblyCompany("LlamaLift Community")]
+[assembly: AssemblyCompany("RankeeNd-Masen Hu")]
 [assembly: AssemblyProduct("LlamaLift")]
-[assembly: AssemblyCopyright("Copyright © 2026")]
+[assembly: AssemblyCopyright("Copyright © 2026 RankeeNd-Masen Hu")]
 [assembly: AssemblyVersion("1.0.0.0")]
 [assembly: AssemblyFileVersion("1.0.0.0")]
 [assembly: AssemblyInformationalVersion("1.0.0-preview")]

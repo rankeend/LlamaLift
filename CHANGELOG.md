@@ -4,6 +4,8 @@
 
 最后一个私有内测预览版本；下一阶段进入公开测试。
 
+- 补充作者与维护者 RankeeNd-Masen Hu、项目支持者 Hongbin Sun 的项目署名。
+
 ### Added
 
 - 模型级 API 协议切换：Responses、Chat Completions、Anthropic Messages。

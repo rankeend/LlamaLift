@@ -30,3 +30,8 @@
 - 当前构建尚未进行 Authenticode 数字签名，Windows SmartScreen 可能显示未知发布者提示。
 - 这是私有 Pre-release，不建议直接用于生产环境。
 - llama.cpp 端点能力取决于所选上游版本；“测试全部”可确认该版本实际支持的协议。
+
+## 项目成员
+
+- 作者与维护者：RankeeNd-Masen Hu
+- 项目支持者：Hongbin Sun
