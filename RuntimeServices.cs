@@ -103,7 +103,7 @@ namespace LlamaServerManager
                 {
                     if (!drive.IsReady || drive.DriveType != DriveType.Fixed) continue;
                     string root = drive.RootDirectory.FullName;
-                    string[] names = { "llama.cpp", "llama-cpp", "llama", "LLM\\llama.cpp", "AI\\llama.cpp", "tools\\llama.cpp" };
+                    string[] names = { "llama.cpp", "llama-cpp", "llama", "LLM\\llama.cpp", "Models\\llama.cpp", "tools\\llama.cpp" };
                     foreach (string name in names) roots.Add(new SearchLocation(Path.Combine(root, name), "磁盘常用安装目录", 82));
                 }
             }

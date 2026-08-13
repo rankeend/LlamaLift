@@ -79,7 +79,7 @@ Use `/metrics` when enabled and `/slots` as a compatible fallback. Missing count
 ## Prohibited
 
 - Fake macOS traffic-light buttons, online fonts, network UI assets or decorative emoji.
-- Excessive glass, glow, gradient backgrounds, large shadows or purple “generic AI” branding.
+- Excessive glass, glow, gradient backgrounds, large shadows or generic purple branding.
 - Layout-shifting hover/press effects, continuous decorative animation or flashing live data.
 - Color-only status, hover-only values, hidden focus states or unlabeled metric units.
 - Fixed widths that cause horizontal scrolling or clipped right radii.

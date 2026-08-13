@@ -2,8 +2,8 @@
 
 ## 协议接入
 
-- [ ] Responses 使用 `/v1/responses`、OpenAI `/v1` Base URL 和 Bearer 鉴权。
-- [ ] Chat Completions 使用 `/v1/chat/completions`、OpenAI `/v1` Base URL 和 Bearer 鉴权。
+- [ ] Responses 使用 `/v1/responses`、`/v1` Base URL 和 Bearer 鉴权。
+- [ ] Chat Completions 使用 `/v1/chat/completions`、`/v1` Base URL 和 Bearer 鉴权。
 - [ ] Anthropic Messages 使用 `/v1/messages`、主机根 Base URL 和 `x-api-key` 鉴权。
 - [ ] 切换协议后端点说明立即同步，但启动命令和未知参数不改变。
 - [ ] “测试当前”只请求所选协议；“测试全部”分别给出三项结果。

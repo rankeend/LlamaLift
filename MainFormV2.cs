@@ -559,12 +559,12 @@ namespace LlamaServerManager
             page.RowStyles.Add(new RowStyle(SizeType.Absolute, 58F));
             page.RowStyles.Add(new RowStyle(SizeType.Absolute, 218F));
             page.RowStyles.Add(new RowStyle(SizeType.Absolute, 486F));
-            page.RowStyles.Add(new RowStyle(SizeType.Absolute, 136F));
+            page.RowStyles.Add(new RowStyle(SizeType.Absolute, 218F));
             page.RowStyles.Add(new RowStyle(SizeType.Absolute, 72F));
             page.RowStyles.Add(new RowStyle(SizeType.Absolute, 218F));
             page.RowStyles.Add(new RowStyle(SizeType.Absolute, 486F));
             page.RowStyles.Add(new RowStyle(SizeType.Absolute, 150F));
-            page.AutoScrollMinSize = new Size(0, 1938);
+            page.AutoScrollMinSize = new Size(0, 2020);
 
             APanel liveCard = NewCard();
             liveCard.Margin = new Padding(0, 0, 0, 14);

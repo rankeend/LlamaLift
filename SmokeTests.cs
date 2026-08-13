@@ -123,7 +123,7 @@ namespace LlamaServerManager
             ApiProtocolRequest chat = LlamaApiClient.BuildProtocolTestRequest(profile, ApiProtocolMode.ChatCompletions);
             Check(chat.RelativePath == "/v1/chat/completions" && chat.AuthenticationHeader == "Authorization" &&
                 chat.Json.Contains("\"messages\"") && chat.Json.Contains("\"max_tokens\""),
-                "Chat Completions protocol uses the chat route and OpenAI payload");
+                "Chat Completions protocol uses the chat route and messages payload");
 
             profile.ApiProtocol = ApiProtocolMode.AnthropicMessages;
             ApiProtocolRequest anthropic = LlamaApiClient.BuildProtocolTestRequest(profile, profile.ApiProtocol);
@@ -137,7 +137,7 @@ namespace LlamaServerManager
             profile.ApiProtocol = ApiProtocolMode.ChatCompletions;
             Check(LlamaApiClient.ProtocolClientBaseUrl(profile) == "http://127.0.0.1:8080/v1" &&
                 LlamaApiClient.ProtocolEndpointUrl(profile) == "http://127.0.0.1:8080/v1/chat/completions",
-                "OpenAI-compatible clients receive the /v1 base URL");
+                "Chat Completions clients receive the /v1 base URL");
             Check(ApiProtocolMode.Normalize("unknown") == ApiProtocolMode.Responses && ApiProtocolMode.Values().Length == 3,
                 "invalid protocol values recover safely and exactly three protocols are offered");
         }

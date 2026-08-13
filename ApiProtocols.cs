@@ -77,9 +77,9 @@ namespace LlamaServerManager
                 case ChatCompletions:
                     return "兼容范围最广，使用 /v1/chat/completions 与 Bearer Key。";
                 case AnthropicMessages:
-                    return "供 Claude/Anthropic 客户端使用，调用 /v1/messages 并发送 x-api-key。";
+                    return "适合 Messages 协议客户端，调用 /v1/messages 并发送 x-api-key。";
                 default:
-                    return "适合 Codex/Zcode 等新客户端，使用 /v1/responses 与 Bearer Key。";
+                    return "适合 Responses 协议客户端，使用 /v1/responses 与 Bearer Key。";
             }
         }
     }
