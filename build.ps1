@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 $projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$version = "0.4.0-dev"
+$version = "1.0.0-preview"
 $distDir = Join-Path $projectDir "dist"
 $installerDistDir = Join-Path $projectDir "dist-installer"
 $releaseDir = Join-Path $projectDir "release"
@@ -29,6 +29,7 @@ Get-ChildItem -LiteralPath $installerDistDir -Force | Remove-Item -Recurse -Forc
 
 $sources = @(
     (Join-Path $projectDir "Models.cs"),
+    (Join-Path $projectDir "ApiProtocols.cs"),
     (Join-Path $projectDir "Services.cs"),
     (Join-Path $projectDir "CommandEditing.cs"),
     (Join-Path $projectDir "CommandValidation.cs"),

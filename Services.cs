@@ -579,6 +579,14 @@ namespace LlamaServerManager
         }
     }
 
+    internal sealed class ApiProtocolRequest
+    {
+        public string Protocol { get; set; }
+        public string RelativePath { get; set; }
+        public string AuthenticationHeader { get; set; }
+        public string Json { get; set; }
+    }
+
     public static class LlamaApiClient
     {
         private static readonly JavaScriptSerializer Serializer = new JavaScriptSerializer();
@@ -601,52 +609,73 @@ namespace LlamaServerManager
 
         public static Task<ApiCheckResult> TestResponsesAsync(ModelProfile profile)
         {
-            return Task.Factory.StartNew(delegate
-            {
-                string key;
-                ApiCheckResult keyError = ReadApiKey(profile, out key);
-                if (keyError != null) return keyError;
-
-                Dictionary<string, object> body = new Dictionary<string, object>();
-                body["model"] = profile.Alias;
-                body["input"] = "只需简短回复：Responses API 测试成功";
-                body["max_output_tokens"] = 256;
-                body["stream"] = false;
-
-                return Send(
-                    "POST",
-                    LocalBaseUrl(profile) + "/v1/responses",
-                    Serializer.Serialize(body),
-                    key,
-                    180000);
-            });
+            return TestProtocolAsync(profile, ApiProtocolMode.Responses);
         }
 
         public static Task<ApiCheckResult> TestChatCompletionsAsync(ModelProfile profile)
         {
+            return TestProtocolAsync(profile, ApiProtocolMode.ChatCompletions);
+        }
+
+        public static Task<ApiCheckResult> TestAnthropicMessagesAsync(ModelProfile profile)
+        {
+            return TestProtocolAsync(profile, ApiProtocolMode.AnthropicMessages);
+        }
+
+        public static Task<ApiCheckResult> TestSelectedProtocolAsync(ModelProfile profile)
+        {
+            return TestProtocolAsync(profile, profile == null ? ApiProtocolMode.Responses : profile.ApiProtocol);
+        }
+
+        public static Task<ApiCheckResult> TestProtocolAsync(ModelProfile profile, string protocol)
+        {
             return Task.Factory.StartNew(delegate
             {
+                if (profile == null) return new ApiCheckResult { Success = false, Summary = "没有可测试的模型配置。" };
                 string key;
                 ApiCheckResult keyError = ReadApiKey(profile, out key);
                 if (keyError != null) return keyError;
-
-                Dictionary<string, object> userMessage = new Dictionary<string, object>();
-                userMessage["role"] = "user";
-                userMessage["content"] = "只需简短回复：Chat Completions API 测试成功";
-
-                Dictionary<string, object> body = new Dictionary<string, object>();
-                body["model"] = profile.Alias;
-                body["messages"] = new object[] { userMessage };
-                body["max_tokens"] = 256;
-                body["stream"] = false;
-
+                ApiProtocolRequest request = BuildProtocolTestRequest(profile, protocol);
                 return Send(
                     "POST",
-                    LocalBaseUrl(profile) + "/v1/chat/completions",
-                    Serializer.Serialize(body),
+                    LocalBaseUrl(profile) + request.RelativePath,
+                    request.Json,
                     key,
-                    180000);
+                    180000,
+                    request.AuthenticationHeader);
             });
+        }
+
+        internal static ApiProtocolRequest BuildProtocolTestRequest(ModelProfile profile, string protocol)
+        {
+            string normalized = ApiProtocolMode.Normalize(protocol);
+            Dictionary<string, object> body = new Dictionary<string, object>();
+            body["model"] = string.IsNullOrWhiteSpace(profile.Alias) ? "local-model" : profile.Alias;
+            body["stream"] = false;
+
+            if (normalized == ApiProtocolMode.Responses)
+            {
+                body["input"] = "只需简短回复：Responses API 测试成功";
+                body["max_output_tokens"] = 8;
+            }
+            else
+            {
+                Dictionary<string, object> userMessage = new Dictionary<string, object>();
+                userMessage["role"] = "user";
+                userMessage["content"] = normalized == ApiProtocolMode.AnthropicMessages
+                    ? "只需简短回复：Anthropic Messages API 测试成功"
+                    : "只需简短回复：Chat Completions API 测试成功";
+                body["messages"] = new object[] { userMessage };
+                body["max_tokens"] = 8;
+            }
+
+            return new ApiProtocolRequest
+            {
+                Protocol = normalized,
+                RelativePath = ApiProtocolMode.EndpointPath(normalized),
+                AuthenticationHeader = normalized == ApiProtocolMode.AnthropicMessages ? "x-api-key" : "Authorization",
+                Json = Serializer.Serialize(body)
+            };
         }
 
         private static ApiCheckResult ReadApiKey(ModelProfile profile, out string key)
@@ -665,13 +694,24 @@ namespace LlamaServerManager
                 };
             }
 
-            string[] lines = File.ReadAllLines(profile.ApiKeyFile, Encoding.UTF8);
-            foreach (string line in lines)
+            try
             {
-                string candidate = line.Trim();
-                if (candidate.Length == 0 || candidate.StartsWith("#", StringComparison.Ordinal)) continue;
-                key = candidate;
-                break;
+                string[] lines = File.ReadAllLines(profile.ApiKeyFile, Encoding.UTF8);
+                foreach (string line in lines)
+                {
+                    string candidate = line.Trim();
+                    if (candidate.Length == 0 || candidate.StartsWith("#", StringComparison.Ordinal)) continue;
+                    key = candidate;
+                    break;
+                }
+            }
+            catch (Exception ex)
+            {
+                return new ApiCheckResult
+                {
+                    Success = false,
+                    Summary = "无法读取 API Key 文件：" + ex.Message
+                };
             }
             if (string.IsNullOrWhiteSpace(key))
             {
@@ -686,11 +726,13 @@ namespace LlamaServerManager
 
         public static string LocalBaseUrl(ModelProfile profile)
         {
+            if (profile == null) throw new ArgumentNullException("profile");
             return "http://127.0.0.1:" + profile.Port;
         }
 
         public static string LanBaseUrl(ModelProfile profile)
         {
+            if (profile == null) throw new ArgumentNullException("profile");
             string host = profile.AdvertisedHost;
             if (string.IsNullOrWhiteSpace(host))
             {
@@ -700,29 +742,49 @@ namespace LlamaServerManager
             return "http://" + host + ":" + profile.Port;
         }
 
-        private static ApiCheckResult Send(string method, string url, string json, string bearerKey, int timeout)
+        public static string ProtocolClientBaseUrl(ModelProfile profile)
         {
-            HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
-            request.Method = method;
-            request.Timeout = timeout;
-            request.ReadWriteTimeout = timeout;
-            request.Accept = "application/json";
-            request.UserAgent = "LlamaLift/" + AppVersion.ProductVersion;
+            if (profile == null) throw new ArgumentNullException("profile");
+            return LanBaseUrl(profile) + ApiProtocolMode.ClientBasePath(profile.ApiProtocol);
+        }
 
-            if (!string.IsNullOrWhiteSpace(bearerKey))
-                request.Headers[HttpRequestHeader.Authorization] = "Bearer " + bearerKey;
+        public static string ProtocolEndpointUrl(ModelProfile profile)
+        {
+            if (profile == null) throw new ArgumentNullException("profile");
+            return LanBaseUrl(profile) + ApiProtocolMode.EndpointPath(profile.ApiProtocol);
+        }
 
-            if (json != null)
-            {
-                byte[] bytes = Encoding.UTF8.GetBytes(json);
-                request.ContentType = "application/json; charset=utf-8";
-                request.ContentLength = bytes.Length;
-                using (Stream stream = request.GetRequestStream())
-                    stream.Write(bytes, 0, bytes.Length);
-            }
-
+        private static ApiCheckResult Send(string method, string url, string json, string apiKey, int timeout, string authenticationHeader = "Authorization")
+        {
             try
             {
+                HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
+                request.Method = method;
+                request.Timeout = timeout;
+                request.ReadWriteTimeout = timeout;
+                request.Accept = "application/json";
+                request.UserAgent = "LlamaLift/" + AppVersion.ProductVersion;
+                request.Proxy = null;
+                request.KeepAlive = false;
+                request.ServicePoint.Expect100Continue = false;
+
+                if (!string.IsNullOrWhiteSpace(apiKey))
+                {
+                    if (string.Equals(authenticationHeader, "x-api-key", StringComparison.OrdinalIgnoreCase))
+                        request.Headers["x-api-key"] = apiKey;
+                    else
+                        request.Headers[HttpRequestHeader.Authorization] = "Bearer " + apiKey;
+                }
+
+                if (json != null)
+                {
+                    byte[] bytes = Encoding.UTF8.GetBytes(json);
+                    request.ContentType = "application/json; charset=utf-8";
+                    request.ContentLength = bytes.Length;
+                    using (Stream stream = request.GetRequestStream())
+                        stream.Write(bytes, 0, bytes.Length);
+                }
+
                 using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
                 {
                     string responseBody = ReadBody(response);
@@ -756,6 +818,16 @@ namespace LlamaServerManager
                     Success = false,
                     StatusCode = 0,
                     Summary = ex.Status == WebExceptionStatus.Timeout ? "请求超时" : ex.Message,
+                    Body = string.Empty
+                };
+            }
+            catch (Exception ex)
+            {
+                return new ApiCheckResult
+                {
+                    Success = false,
+                    StatusCode = 0,
+                    Summary = ex.Message,
                     Body = string.Empty
                 };
             }

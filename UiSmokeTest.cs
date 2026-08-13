@@ -80,7 +80,14 @@ namespace LlamaServerManager
                 }
                 List<string> problems = Audit(form);
                 if (problems.Count > 0)
-                    throw new InvalidOperationException("UI audit failed:\r\n" + string.Join("\r\n", problems.ToArray()));
+                {
+                    string message = "UI audit failed:\r\n" + string.Join("\r\n", problems.ToArray());
+                    try { File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ui-error.txt"), message, System.Text.Encoding.UTF8); } catch { }
+                    Console.Error.WriteLine(message);
+                    form.Close();
+                    Environment.ExitCode = 2;
+                    return;
+                }
                 CaptureWindow(form, output);
                 form.Close();
             }
@@ -114,7 +121,14 @@ namespace LlamaServerManager
                     if (secretBox == null || !secretBox.ReadOnly || secretBox.Text.Contains("test-only-secret"))
                         problems.Add("API Key dialog does not mask secrets by default");
                     if (problems.Count > 0)
-                        throw new InvalidOperationException("API Key dialog audit failed:\r\n" + string.Join("\r\n", problems.ToArray()));
+                    {
+                        string message = "API Key dialog audit failed:\r\n" + string.Join("\r\n", problems.ToArray());
+                        try { File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ui-error.txt"), message, System.Text.Encoding.UTF8); } catch { }
+                        Console.Error.WriteLine(message);
+                        dialog.Close();
+                        Environment.ExitCode = 2;
+                        return;
+                    }
                     dialog.Refresh();
                     CaptureControl(dialog, output);
                     dialog.Close();
@@ -163,6 +177,7 @@ namespace LlamaServerManager
         private static List<string> Audit(MainFormV2 form)
         {
             List<string> problems = new List<string>();
+            AuditProtocolAndStatusInteractions(form, problems);
             if (form.FormBorderStyle != FormBorderStyle.Sizable) problems.Add("window is not sizable");
             if (!form.ControlBox || !form.MinimizeBox || !form.MaximizeBox) problems.Add("native window controls are incomplete");
             Rectangle formClient = form.RectangleToScreen(form.ClientRectangle);
@@ -183,6 +198,8 @@ namespace LlamaServerManager
             Control sidebar = sidebarField.GetValue(form) as Control;
             Label brandTitle = brandTitleField.GetValue(form) as Label;
             Label brandVersion = brandVersionField.GetValue(form) as Label;
+            FieldInfo sidebarStatusField = typeof(MainFormV2).GetField("lblSidebarServiceStatus", BindingFlags.Instance | BindingFlags.NonPublic);
+            Label sidebarStatus = sidebarStatusField == null ? null : sidebarStatusField.GetValue(form) as Label;
             if (sidebar == null || brandTitle == null || brandVersion == null)
                 problems.Add("responsive sidebar brand controls are missing");
             else
@@ -197,6 +214,11 @@ namespace LlamaServerManager
                     problems.Add("product brand was not migrated to LlamaLift");
                 if (brandVersion.Text.IndexOf("本地模型，一键起飞", StringComparison.Ordinal) < 0)
                     problems.Add("brand slogan is missing from the sidebar");
+                if (sidebarStatus == null || sidebarStatus.Text.IndexOf("llama.cpp", StringComparison.OrdinalIgnoreCase) < 0 ||
+                    sidebarStatus.Text.Contains("便携") || sidebarStatus.Text.Contains("安装"))
+                    problems.Add("sidebar footer does not expose the real llama.cpp service status");
+                else if (!sidebarScreen.Contains(sidebarStatus.RectangleToScreen(sidebarStatus.ClientRectangle)))
+                    problems.Add("sidebar llama.cpp status is clipped: sidebar=" + sidebarScreen + ", status=" + sidebarStatus.RectangleToScreen(sidebarStatus.ClientRectangle));
 
                 FieldInfo navButtonsField = typeof(MainFormV2).GetField("navButtons", BindingFlags.Instance | BindingFlags.NonPublic);
                 IDictionary navButtons = navButtonsField == null ? null : navButtonsField.GetValue(form) as IDictionary;
@@ -333,6 +355,8 @@ namespace LlamaServerManager
             Control settingsPage = pages == null ? null : pages["settings"] as Control;
             if (settingsPage != null && FindControl(settingsPage, "管理 API Key") == null)
                 problems.Add("settings page has no API Key management entry");
+            if (settingsPage != null && FindLabel(settingsPage, "\u8fd0\u884c\u6a21\u5f0f") != null)
+                problems.Add("settings page still exposes the removed install/portable mode label");
 
             Control monitoringPage = pages == null ? null : pages["monitoring"] as Control;
             if (monitoringPage == null || CountControls<RealtimeMetricChart>(monitoringPage) < 8)
@@ -363,10 +387,82 @@ namespace LlamaServerManager
                 }
                 if (FindControl(profilePage, "检测") == null)
                     problems.Add("profile page has no automatic llama-server detection action");
+                FieldInfo protocolField = typeof(MainFormV2).GetField("cmbApiProtocol", BindingFlags.Instance | BindingFlags.NonPublic);
+                AntdUI.Select protocol = protocolField == null ? null : protocolField.GetValue(form) as AntdUI.Select;
+                if (protocol == null || protocol.Items.Count != 3 || protocol.Width < 120)
+                    problems.Add("profile page does not provide all three API protocol choices");
             }
 
             AuditChildren(form, problems);
             return problems;
+        }
+
+        private static void AuditProtocolAndStatusInteractions(MainFormV2 form, List<string> problems)
+        {
+            FieldInfo profileField = typeof(MainFormV2).GetField("currentProfile", BindingFlags.Instance | BindingFlags.NonPublic);
+            FieldInfo protocolField = typeof(MainFormV2).GetField("cmbApiProtocol", BindingFlags.Instance | BindingFlags.NonPublic);
+            FieldInfo commandField = typeof(MainFormV2).GetField("txtCommand", BindingFlags.Instance | BindingFlags.NonPublic);
+            FieldInfo loadingField = typeof(MainFormV2).GetField("loadingControls", BindingFlags.Instance | BindingFlags.NonPublic);
+            FieldInfo stateField = typeof(MainFormV2).GetField("localModelUiState", BindingFlags.Instance | BindingFlags.NonPublic);
+            FieldInfo sidebarStatusField = typeof(MainFormV2).GetField("lblSidebarServiceStatus", BindingFlags.Instance | BindingFlags.NonPublic);
+            MethodInfo updatePreview = typeof(MainFormV2).GetMethod("UpdateCommandPreview", BindingFlags.Instance | BindingFlags.NonPublic);
+            MethodInfo updateSummary = typeof(MainFormV2).GetMethod("UpdateDashboardSummary", BindingFlags.Instance | BindingFlags.NonPublic);
+            MethodInfo setState = typeof(MainFormV2).GetMethod("SetLocalModelState", BindingFlags.Instance | BindingFlags.NonPublic);
+            ModelProfile profile = profileField == null ? null : profileField.GetValue(form) as ModelProfile;
+            AntdUI.Select protocol = protocolField == null ? null : protocolField.GetValue(form) as AntdUI.Select;
+            AntdUI.Input command = commandField == null ? null : commandField.GetValue(form) as AntdUI.Input;
+            Label sidebarStatus = sidebarStatusField == null ? null : sidebarStatusField.GetValue(form) as Label;
+            if (profile == null || protocol == null || command == null || loadingField == null)
+            {
+                problems.Add("protocol interaction audit could not access the model controls");
+                return;
+            }
+
+            bool originalUseCustom = profile.UseCustomCommand;
+            string originalCustom = profile.CustomCommand;
+            string originalProtocol = profile.ApiProtocol;
+            int originalSelectedIndex = protocol.SelectedIndex;
+            string originalCommandText = command.Text;
+            object originalState = stateField == null ? null : stateField.GetValue(form);
+            try
+            {
+                profile.UseCustomCommand = true;
+                profile.CustomCommand = originalCommandText;
+                protocol.SelectedIndex = 1;
+                Application.DoEvents();
+                if (profile.ApiProtocol != ApiProtocolMode.ChatCompletions)
+                    problems.Add("switching to Chat Completions does not synchronize the profile");
+                if (!profile.UseCustomCommand || command.Text != originalCommandText)
+                    problems.Add("switching API protocols discards or rewrites the custom llama-server command");
+
+                protocol.SelectedIndex = 2;
+                Application.DoEvents();
+                if (profile.ApiProtocol != ApiProtocolMode.AnthropicMessages ||
+                    LlamaApiClient.ProtocolEndpointUrl(profile).IndexOf("/v1/messages", StringComparison.Ordinal) < 0)
+                    problems.Add("switching to Anthropic Messages does not produce the correct endpoint");
+
+                if (setState != null && stateField != null && sidebarStatus != null)
+                {
+                    object generating = Enum.Parse(stateField.FieldType, "Generating");
+                    setState.Invoke(form, new object[] { generating });
+                    if (sidebarStatus.Text.IndexOf("输出中", StringComparison.Ordinal) < 0 ||
+                        sidebarStatus.AccessibleName.IndexOf("输出中", StringComparison.Ordinal) < 0)
+                        problems.Add("the sidebar does not expose the live generating state accessibly");
+                }
+            }
+            finally
+            {
+                loadingField.SetValue(form, true);
+                profile.UseCustomCommand = originalUseCustom;
+                profile.CustomCommand = originalCustom;
+                profile.ApiProtocol = originalProtocol;
+                protocol.SelectedIndex = originalSelectedIndex;
+                loadingField.SetValue(form, false);
+                if (updatePreview != null) updatePreview.Invoke(form, null);
+                if (updateSummary != null) updateSummary.Invoke(form, null);
+                if (setState != null && originalState != null) setState.Invoke(form, new object[] { originalState });
+                Application.DoEvents();
+            }
         }
 
         private static bool ScrollPageToBottom(MainFormV2 form, string pageKey)

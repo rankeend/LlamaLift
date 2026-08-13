@@ -1,5 +1,5 @@
 #define MyAppName "LlamaLift"
-#define MyAppVersion "0.4.0"
+#define MyAppVersion "1.0.0"
 #define MyAppPublisher "LlamaLift Community"
 #define MyAppExeName "LlamaLift.exe"
 
@@ -12,7 +12,7 @@ DefaultDirName={autopf}\LlamaLift
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=..\release
-OutputBaseFilename=LlamaLift-v0.4.0-dev-Setup
+OutputBaseFilename=LlamaLift-v1.0.0-preview-Setup
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern

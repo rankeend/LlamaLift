@@ -1,4 +1,4 @@
-LlamaLift v0.4.0-dev
+LlamaLift v1.0.0-preview
 =====================
 
 本地模型，一键起飞。
@@ -18,6 +18,15 @@ LlamaLift v0.4.0-dev
 5. 进阶用户可在“参数工作台”编辑完整命令；保存时会自动预检并给出建议，风险提示不会强制阻止保存。
 6. 可在“模型配置”或“外观与设置”中管理 API Key，列表默认只显示脱敏摘要。
 7. 检测后端、保存配置，然后点击“启动服务”。“性能监测”页面可实时查看系统与模型指标。
+8. 根据接入软件选择 Responses、Chat Completions 或 Anthropic Messages；可测试当前协议或一次检查全部协议。
+
+协议与状态
+----------
+- Responses：Base URL 以 /v1 结尾，请求端点 /v1/responses，使用 Bearer 鉴权。
+- Chat Completions：Base URL 以 /v1 结尾，请求端点 /v1/chat/completions，使用 Bearer 鉴权。
+- Anthropic Messages：Base URL 使用主机根地址，请求端点 /v1/messages，使用 x-api-key 鉴权。
+- 切换协议不会改变 llama-server 启动命令；侧栏会实时显示已关闭、加载中、已就绪、输出中或异常。
+- 新生成的托管密钥格式为 sk-llamalift- 加 64 位十六进制随机内容。
 
 实时监测
 --------

@@ -8,8 +8,8 @@ namespace LlamaServerManager
 {
     internal static class AppVersion
     {
-        public const string ProductVersion = "0.4.0";
-        public const string DisplayVersion = "v0.4.0-dev";
+        public const string ProductVersion = "1.0.0";
+        public const string DisplayVersion = "v1.0.0-preview";
     }
 
     public sealed class AppConfig
@@ -27,7 +27,7 @@ namespace LlamaServerManager
 
         public AppConfig()
         {
-            SchemaVersion = 7;
+            SchemaVersion = 8;
             SelectedProfileId = string.Empty;
             Profiles = new List<ModelProfile>();
             ThemeMode = "Light";
@@ -49,6 +49,7 @@ namespace LlamaServerManager
         public string MmprojPath { get; set; }
         public string Alias { get; set; }
         public string ApiKeyFile { get; set; }
+        public string ApiProtocol { get; set; }
         public string Host { get; set; }
         public string AdvertisedHost { get; set; }
         public int Port { get; set; }
@@ -87,6 +88,7 @@ namespace LlamaServerManager
             MmprojPath = string.Empty;
             Alias = "local-model";
             ApiKeyFile = string.Empty;
+            ApiProtocol = ApiProtocolMode.Responses;
             Host = "127.0.0.1";
             AdvertisedHost = "127.0.0.1";
             Port = 8080;
@@ -606,6 +608,7 @@ namespace LlamaServerManager
                 string.Equals(left.MmprojPath, right.MmprojPath, StringComparison.OrdinalIgnoreCase) &&
                 string.Equals(left.Alias, right.Alias, StringComparison.Ordinal) &&
                 string.Equals(left.ApiKeyFile, right.ApiKeyFile, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(ApiProtocolMode.Normalize(left.ApiProtocol), ApiProtocolMode.Normalize(right.ApiProtocol), StringComparison.Ordinal) &&
                 string.Equals(left.Host, right.Host, StringComparison.OrdinalIgnoreCase) &&
                 string.Equals(left.AdvertisedHost, right.AdvertisedHost, StringComparison.OrdinalIgnoreCase) &&
                 left.Port == right.Port &&
@@ -660,7 +663,7 @@ namespace LlamaServerManager
         private static void Normalize(AppConfig config)
         {
             int previousSchema = config.SchemaVersion;
-            config.SchemaVersion = 7;
+            config.SchemaVersion = 8;
             if (string.IsNullOrWhiteSpace(config.ThemeMode)) config.ThemeMode = "System";
             if (string.IsNullOrWhiteSpace(config.AccentName)) config.AccentName = "Blue";
             if (config.Profiles == null)
@@ -701,6 +704,7 @@ namespace LlamaServerManager
             {
                 if (string.IsNullOrWhiteSpace(profile.Id)) profile.Id = Guid.NewGuid().ToString("N");
                 if (string.IsNullOrWhiteSpace(profile.Name)) profile.Name = "未命名模型";
+                profile.ApiProtocol = ApiProtocolMode.Normalize(profile.ApiProtocol);
                 if (string.IsNullOrWhiteSpace(profile.Host)) profile.Host = "127.0.0.1";
                 if (string.IsNullOrWhiteSpace(profile.AdvertisedHost))
                 {

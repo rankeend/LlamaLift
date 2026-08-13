@@ -32,8 +32,11 @@ namespace LlamaServerManager
             Check(generic.Parallel == 1, "generic single active request");
             Check(generic.BatchSize == 2048 && generic.UbatchSize == 512, "generic batch defaults match llama.cpp defaults");
             Check(generic.EnableMetrics, "generic profile enables local performance metrics");
+            Check(generic.ApiProtocol == ApiProtocolMode.Responses, "generic profile defaults to the Responses protocol");
             Check(LlamaApiClient.LocalBaseUrl(generic) == "http://127.0.0.1:8080", "generic local probe URL");
             Check(LlamaApiClient.LanBaseUrl(generic) == "http://127.0.0.1:8080", "generic published URL");
+            CheckApiProtocols();
+            CheckApiProtocolLoopback();
 
             ModelProfile profile = ModelProfile.CreateGenericProfile();
             profile.ServerExecutable = @"C:\llama.cpp\llama-server.exe";
@@ -107,6 +110,138 @@ namespace LlamaServerManager
             Check(!CommandBuilder.BuildSafeDisplayCommand(parsed.Profile).Contains("super-secret-value"), "inline secrets are redacted from launch logs");
         }
 
+        private static void CheckApiProtocols()
+        {
+            ModelProfile profile = ModelProfile.CreateGenericProfile();
+            profile.Alias = "qwen-local";
+
+            ApiProtocolRequest responses = LlamaApiClient.BuildProtocolTestRequest(profile, ApiProtocolMode.Responses);
+            Check(responses.RelativePath == "/v1/responses" && responses.AuthenticationHeader == "Authorization" &&
+                responses.Json.Contains("\"input\"") && responses.Json.Contains("\"max_output_tokens\""),
+                "Responses protocol uses the native route, Bearer authentication and Responses payload");
+
+            ApiProtocolRequest chat = LlamaApiClient.BuildProtocolTestRequest(profile, ApiProtocolMode.ChatCompletions);
+            Check(chat.RelativePath == "/v1/chat/completions" && chat.AuthenticationHeader == "Authorization" &&
+                chat.Json.Contains("\"messages\"") && chat.Json.Contains("\"max_tokens\""),
+                "Chat Completions protocol uses the chat route and OpenAI payload");
+
+            profile.ApiProtocol = ApiProtocolMode.AnthropicMessages;
+            ApiProtocolRequest anthropic = LlamaApiClient.BuildProtocolTestRequest(profile, profile.ApiProtocol);
+            Check(anthropic.RelativePath == "/v1/messages" && anthropic.AuthenticationHeader == "x-api-key" &&
+                anthropic.Json.Contains("\"messages\"") && !anthropic.Json.Contains("max_output_tokens"),
+                "Anthropic Messages protocol uses the messages route and x-api-key authentication");
+            Check(LlamaApiClient.ProtocolClientBaseUrl(profile) == "http://127.0.0.1:8080" &&
+                LlamaApiClient.ProtocolEndpointUrl(profile) == "http://127.0.0.1:8080/v1/messages",
+                "Anthropic clients receive the correct base URL and endpoint URL");
+
+            profile.ApiProtocol = ApiProtocolMode.ChatCompletions;
+            Check(LlamaApiClient.ProtocolClientBaseUrl(profile) == "http://127.0.0.1:8080/v1" &&
+                LlamaApiClient.ProtocolEndpointUrl(profile) == "http://127.0.0.1:8080/v1/chat/completions",
+                "OpenAI-compatible clients receive the /v1 base URL");
+            Check(ApiProtocolMode.Normalize("unknown") == ApiProtocolMode.Responses && ApiProtocolMode.Values().Length == 3,
+                "invalid protocol values recover safely and exactly three protocols are offered");
+        }
+
+        private static void CheckApiProtocolLoopback()
+        {
+            string keyPath = Path.Combine(Path.GetTempPath(), "llamalift-protocol-key-" + Guid.NewGuid().ToString("N") + ".txt");
+            File.WriteAllText(keyPath, "sk-llamalift-test-only", new UTF8Encoding(false));
+            try
+            {
+                foreach (string protocol in ApiProtocolMode.Values())
+                {
+                    TcpListener listener = new TcpListener(IPAddress.Loopback, 0);
+                    listener.Start();
+                    int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+                    string requestLine = string.Empty;
+                    string authorization = string.Empty;
+                    string anthropicKey = string.Empty;
+                    string requestBody = string.Empty;
+                    string workerError = string.Empty;
+                    Thread worker = new Thread(delegate()
+                    {
+                        try
+                        {
+                            using (TcpClient client = listener.AcceptTcpClient())
+                            using (NetworkStream stream = client.GetStream())
+                            {
+                                client.ReceiveTimeout = 10000;
+                                List<byte> headerBuffer = new List<byte>();
+                                int matched = 0;
+                                byte[] headerTerminator = new byte[] { 13, 10, 13, 10 };
+                                while (matched < headerTerminator.Length)
+                                {
+                                    int next = stream.ReadByte();
+                                    if (next < 0) throw new EndOfStreamException("HTTP request headers ended unexpectedly.");
+                                    headerBuffer.Add((byte)next);
+                                    matched = next == headerTerminator[matched] ? matched + 1 : (next == headerTerminator[0] ? 1 : 0);
+                                    if (headerBuffer.Count > 32768) throw new InvalidDataException("HTTP request headers are too large.");
+                                }
+                                string[] headerLines = Encoding.ASCII.GetString(headerBuffer.ToArray()).Split(new string[] { "\r\n" }, StringSplitOptions.None);
+                                requestLine = headerLines.Length == 0 ? string.Empty : headerLines[0];
+                                int contentLength = 0;
+                                for (int headerIndex = 1; headerIndex < headerLines.Length; headerIndex++)
+                                {
+                                    string header = headerLines[headerIndex];
+                                    if (header.Length == 0) break;
+                                    int colon = header.IndexOf(':');
+                                    if (colon <= 0) continue;
+                                    string name = header.Substring(0, colon).Trim();
+                                    string value = header.Substring(colon + 1).Trim();
+                                    if (name.Equals("Content-Length", StringComparison.OrdinalIgnoreCase)) Int32.TryParse(value, out contentLength);
+                                    else if (name.Equals("Authorization", StringComparison.OrdinalIgnoreCase)) authorization = value;
+                                    else if (name.Equals("x-api-key", StringComparison.OrdinalIgnoreCase)) anthropicKey = value;
+                                }
+                                byte[] continueBytes = Encoding.ASCII.GetBytes("HTTP/1.1 100 Continue\r\n\r\n");
+                                stream.Write(continueBytes, 0, continueBytes.Length);
+                                stream.Flush();
+                                byte[] body = new byte[Math.Max(0, contentLength)];
+                                int offset = 0;
+                                while (offset < body.Length)
+                                {
+                                    int read = stream.Read(body, offset, body.Length - offset);
+                                    if (read <= 0) break;
+                                    offset += read;
+                                }
+                                requestBody = Encoding.UTF8.GetString(body, 0, offset);
+                                byte[] payload = Encoding.UTF8.GetBytes("{\"ok\":true}");
+                                string responseHeaders = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + payload.Length + "\r\nConnection: close\r\n\r\n";
+                                byte[] headerBytes = Encoding.ASCII.GetBytes(responseHeaders);
+                                stream.Write(headerBytes, 0, headerBytes.Length);
+                                stream.Write(payload, 0, payload.Length);
+                                stream.Flush();
+                            }
+                        }
+                        catch (Exception ex) { workerError = ex.Message; }
+                    });
+                    worker.IsBackground = true;
+                    worker.Start();
+
+                    try
+                    {
+                        ModelProfile profile = ModelProfile.CreateGenericProfile();
+                        profile.Port = port;
+                        profile.Alias = "loopback-model";
+                        profile.ApiKeyFile = keyPath;
+                        ApiCheckResult result = LlamaApiClient.TestProtocolAsync(profile, protocol).GetAwaiter().GetResult();
+                        bool completed = worker.Join(12000);
+                        string expectedPath = ApiProtocolMode.EndpointPath(protocol);
+                        bool authMatches = protocol == ApiProtocolMode.AnthropicMessages
+                            ? anthropicKey == "sk-llamalift-test-only" && string.IsNullOrEmpty(authorization)
+                            : authorization == "Bearer sk-llamalift-test-only" && string.IsNullOrEmpty(anthropicKey);
+                        string diagnostic = " [summary=" + result.Summary + ", completed=" + completed + ", worker=" + workerError +
+                            ", request=" + requestLine + "]";
+                        Check(result.Success && completed && workerError.Length == 0 && requestLine.StartsWith("POST " + expectedPath + " ", StringComparison.Ordinal),
+                            ApiProtocolMode.DisplayName(protocol) + " completes a real loopback HTTP request on the correct route" + diagnostic);
+                        Check(authMatches && requestBody.Contains("\"model\":\"loopback-model\""),
+                            ApiProtocolMode.DisplayName(protocol) + " sends the expected authentication header and JSON body" + diagnostic);
+                    }
+                    finally { listener.Stop(); }
+                }
+            }
+            finally { try { File.Delete(keyPath); } catch { } }
+        }
+
         private static void CheckCommandPreflight()
         {
             ModelProfile baseline = ModelProfile.CreateGenericProfile();
@@ -146,7 +281,10 @@ namespace LlamaServerManager
                 Check(!saved.MaskedPreview.Contains("sk-first") && saved.MaskedPreview.EndsWith("irst"), "API Key list exposes only a masked preview");
                 Check(store.List().Count == 1 && store.Read(saved.FilePath).Contains("sk-second"), "API Key manager lists and reads managed files");
                 string generated = ApiKeyStore.GenerateKey();
-                Check(generated.StartsWith("llift_") && generated.Length > 40, "API Key manager generates cryptographically random keys");
+                Check(generated.StartsWith("sk-llamalift-") && generated.Length == 77,
+                    "API Key manager generates sk-llamalift keys with 32 random bytes");
+                Check(System.Text.RegularExpressions.Regex.IsMatch(generated, @"^sk-llamalift-[0-9a-f]{64}$"),
+                    "API Key manager emits a client-compatible lowercase hexadecimal key");
                 File.WriteAllText(outside, "must-stay");
                 bool traversalBlocked = false;
                 try { store.Delete(outside); }
@@ -295,6 +433,7 @@ namespace LlamaServerManager
             ModelProfile muse = migrated.Profiles[0];
             Check(muse.Name == "Muse profile" && muse.ContextSize == 262144, "migration preserves existing profile identity and 256K context");
             Check(muse.CacheTypeK == "turbo3" && muse.CacheTypeV == "turbo3", "migration preserves TurboQuant cache types");
+            Check(muse.ApiProtocol == ApiProtocolMode.Responses, "legacy profiles migrate to the Responses protocol without data loss");
 
             AppConfig defaults = new AppConfig();
             defaults.SchemaVersion = 6;
@@ -531,6 +670,7 @@ namespace LlamaServerManager
             damaged.GpuLayers = string.Empty;
             damaged.CacheTypeK = string.Empty;
             damaged.CacheTypeV = string.Empty;
+            damaged.ApiProtocol = "unsupported";
 
             AppConfig config = new AppConfig();
             config.Profiles.Add(damaged);
@@ -544,6 +684,7 @@ namespace LlamaServerManager
             Check(damaged.Port == 8080 && damaged.Parallel == 1, "invalid numeric values are normalized");
             Check(damaged.GpuLayers == "auto", "blank GPU layer setting is normalized");
             Check(damaged.CacheTypeK == "q8_0" && damaged.CacheTypeV == "q8_0", "blank KV cache settings are normalized");
+            Check(damaged.ApiProtocol == ApiProtocolMode.Responses, "invalid API protocol values normalize to Responses");
         }
 
         private static void Check(bool condition, string name)

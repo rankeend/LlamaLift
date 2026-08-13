@@ -1,3 +1,5 @@
+param([string]$ScenarioFilter = "")
+
 $ErrorActionPreference = "Stop"
 $projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $testDir = Join-Path $projectDir "test-output\ui"
@@ -15,6 +17,7 @@ $arguments = @(
     "/reference:System.Windows.Forms.dll", "/reference:System.Web.Extensions.dll", "/reference:System.Management.dll",
     "/reference:System.IO.Compression.dll", "/reference:System.IO.Compression.FileSystem.dll", "/reference:$antdDll",
     (Join-Path $projectDir "Models.cs"), (Join-Path $projectDir "Services.cs"),
+    (Join-Path $projectDir "ApiProtocols.cs"),
     (Join-Path $projectDir "CommandEditing.cs"),
     (Join-Path $projectDir "CommandValidation.cs"),
     (Join-Path $projectDir "ApiKeyStore.cs"),
@@ -53,9 +56,13 @@ $scenarios = @(
 )
 $images = @()
 $uiError = Join-Path $testDir "ui-error.txt"
+if (-not [string]::IsNullOrWhiteSpace($ScenarioFilter)) {
+    $scenarios = @($scenarios | Where-Object { $_.Name -like $ScenarioFilter })
+    if ($scenarios.Count -eq 0) { throw "没有匹配的 UI 场景：$ScenarioFilter" }
+}
 foreach ($scenario in $scenarios) {
     if (Test-Path -LiteralPath $uiError) { Remove-Item -LiteralPath $uiError -Force }
-    $image = Join-Path $testDir ("LlamaLift-v0.4-" + $scenario.Name + ".png")
+    $image = Join-Path $testDir ("LlamaLift-v1.0-preview-" + $scenario.Name + ".png")
     & (Join-Path $testDir "UiSmokeTest.exe") $image $scenario.Theme $scenario.Page $scenario.Width $scenario.Height $scenario.Scale $scenario.Scroll
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $image)) { throw ("UI render test failed: " + $scenario.Name) }
     $images += $image

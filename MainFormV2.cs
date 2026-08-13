@@ -21,6 +21,17 @@ namespace LlamaServerManager
 {
     public sealed class MainFormV2 : Form
     {
+        private enum LocalModelUiState
+        {
+            Closed,
+            Loading,
+            Ready,
+            Generating,
+            Stopping,
+            External,
+            Failed
+        }
+
         private static readonly string MonospaceFontFamily = ResolveMonospaceFontFamily();
         private readonly AppConfig config;
         private readonly ServerProcessManager processManager;
@@ -51,6 +62,8 @@ namespace LlamaServerManager
         private bool closingInProgress;
         private bool shutdownFinalized;
         private DateTime serviceStartedUtc = DateTime.MinValue;
+        private DateTime lastGenerationActivityUtc = DateTime.MinValue;
+        private LocalModelUiState localModelUiState = LocalModelUiState.Closed;
         private string currentPage = "dashboard";
 
         private APanel sidebar;
@@ -59,6 +72,7 @@ namespace LlamaServerManager
         private TableLayoutPanel mainLayout;
         private Label lblBrandTitle;
         private Label lblBrandVersion;
+        private Label lblSidebarServiceStatus;
         private TableLayoutPanel profilePage;
         private TableLayoutPanel profileColumns;
         private System.Windows.Forms.Panel profileScroll;
@@ -94,6 +108,8 @@ namespace LlamaServerManager
         private AInput txtMmproj;
         private AInput txtAlias;
         private AInput txtApiKeyFile;
+        private ASelect cmbApiProtocol;
+        private Label lblProtocolHint;
         private AInput txtHost;
         private AInput txtAdvertisedHost;
         private AInputNumber numPort;
@@ -147,6 +163,7 @@ namespace LlamaServerManager
         private AButton btnRestart;
         private AButton btnDetect;
         private AButton btnTest;
+        private AButton btnTestAllProtocols;
         private ASelect cmbTheme;
         private ASelect cmbAccent;
         private System.Windows.Forms.Timer healthTimer;
@@ -214,7 +231,7 @@ namespace LlamaServerManager
             logFlushTimer.Start();
 
             AppendLog("LlamaLift " + AppVersion.DisplayVersion + " 已启动。", false);
-            AppendLog("运行模式：" + (ConfigStore.IsPortable ? "便携版" : "安装版") + "；配置目录：" + ConfigStore.DataDirectory, false);
+            AppendLog("配置目录：" + ConfigStore.DataDirectory, false);
             UpdateDashboardSummary();
         }
 
@@ -360,11 +377,12 @@ namespace LlamaServerManager
             Label machine = MakeLabel(Environment.MachineName, 9F, FontStyle.Bold);
             machine.Location = new Point(6, 13);
             machine.AutoSize = true;
-            Label mode = MakeMutedLabel(ConfigStore.IsPortable ? "便携模式" : "安装模式", 8.5F);
-            mode.Location = new Point(6, 37);
-            mode.AutoSize = true;
+            lblSidebarServiceStatus = MakeMutedLabel("llama.cpp · 已关闭", 8.5F);
+            lblSidebarServiceStatus.Location = new Point(6, 37);
+            lblSidebarServiceStatus.AutoSize = true;
+            lblSidebarServiceStatus.AccessibleName = "本地大模型状态：已关闭";
             footer.Controls.Add(machine);
-            footer.Controls.Add(mode);
+            footer.Controls.Add(lblSidebarServiceStatus);
             layout.Controls.Add(footer, 0, 9);
             return panel;
         }
@@ -439,13 +457,20 @@ namespace LlamaServerManager
             lblHeroStatus.AutoSize = true;
             lblProfileSummary = MakeMutedLabel("请选择并配置一个 llama.cpp 模型", 9.5F);
             lblProfileSummary.Location = new Point(2, 45);
-            lblProfileSummary.AutoSize = true;
+            lblProfileSummary.AutoSize = false;
+            lblProfileSummary.AutoEllipsis = true;
+            lblProfileSummary.Size = new Size(10, 22);
+            lblProfileSummary.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
             lblEndpoint = MakeMutedLabel("API 地址尚未配置", 9F);
             lblEndpoint.Location = new Point(2, 72);
-            lblEndpoint.AutoSize = true;
+            lblEndpoint.AutoSize = false;
+            lblEndpoint.AutoEllipsis = true;
+            lblEndpoint.Size = new Size(10, 22);
+            lblEndpoint.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
             heroText.Controls.Add(lblHeroStatus);
             heroText.Controls.Add(lblProfileSummary);
             heroText.Controls.Add(lblEndpoint);
+            heroText.SizeChanged += delegate { if (currentProfile != null) UpdateDashboardSummary(); };
             heroLayout.Controls.Add(heroText, 0, 0);
 
             FlowLayoutPanel heroActions = new FlowLayoutPanel();
@@ -493,15 +518,16 @@ namespace LlamaServerManager
             actionLayout.Controls.Add(quickTitle, 0, 0);
             FlowLayoutPanel quick = new FlowLayoutPanel();
             quick.Dock = DockStyle.Fill;
-            quick.WrapContents = true;
+            quick.WrapContents = false;
             quick.Tag = "surface";
-            btnDetect = MakeButton("检测后端", 88, AntdUI.TTypeMini.Default, DetectBackendClicked);
-            btnTest = MakeButton("测试双协议", 96, AntdUI.TTypeMini.Default, TestApiClicked);
+            btnDetect = MakeButton("检测后端", 84, AntdUI.TTypeMini.Default, DetectBackendClicked);
+            btnTest = MakeButton("测试当前", 92, AntdUI.TTypeMini.Default, TestApiClicked);
+            btnTestAllProtocols = MakeButton("测试全部", 92, AntdUI.TTypeMini.Default, TestAllProtocolsClicked);
             quick.Controls.Add(btnDetect);
             quick.Controls.Add(btnTest);
-            quick.Controls.Add(MakeButton("复制 API 地址", 108, AntdUI.TTypeMini.Default, CopyEndpointClicked));
+            quick.Controls.Add(btnTestAllProtocols);
+            quick.Controls.Add(MakeButton("复制地址", 92, AntdUI.TTypeMini.Default, CopyEndpointClicked));
             quick.Controls.Add(MakeButton("打开 WebUI", 92, AntdUI.TTypeMini.Default, OpenWebUiClicked));
-            quick.Controls.Add(MakeButton("编辑模型配置", 108, AntdUI.TTypeMini.Default, delegate { Navigate("profiles"); }));
             actionLayout.Controls.Add(quick, 0, 1);
             actions.Controls.Add(actionLayout);
             page.Controls.Add(actions, 0, 2);
@@ -1174,12 +1200,12 @@ namespace LlamaServerManager
             table.Dock = DockStyle.Top;
             table.AutoSize = true;
             table.ColumnCount = 3;
-            table.RowCount = 7;
+            table.RowCount = 8;
             table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 92F));
             table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
             table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 70F));
-            for (int i = 0; i < 6; i++) table.RowStyles.Add(new RowStyle(SizeType.Absolute, 48F));
-            table.RowStyles.Add(new RowStyle(SizeType.Absolute, 58F));
+            for (int i = 0; i < 7; i++) table.RowStyles.Add(new RowStyle(SizeType.Absolute, 48F));
+            table.RowStyles.Add(new RowStyle(SizeType.Absolute, 66F));
 
             txtProfileName = AddInputRow(table, 0, "配置名称", "例如：Qwen 35B · 主服务", null);
             txtServerExe = AddInputRow(table, 1, "llama-server", "自动检测或手动选择 llama-server.exe", DetectServerExecutableClicked, "检测");
@@ -1188,11 +1214,24 @@ namespace LlamaServerManager
             txtAlias = AddInputRow(table, 4, "模型别名", "API 请求中的 model 名称", null);
             txtApiKeyFile = AddInputRow(table, 5, "API Key", "可选：选择托管或外部 Key 文件", delegate { OpenApiKeyManager(); }, "管理");
 
-            Label note = MakeMutedLabel("模型文件只保存路径。托管 API Key 位于应用数据目录；为空时不启用鉴权。", 8.5F);
-            note.Dock = DockStyle.Fill;
-            note.TextAlign = ContentAlignment.MiddleLeft;
-            table.Controls.Add(note, 0, 6);
-            table.SetColumnSpan(note, 3);
+            Label protocolLabel = MakeMutedLabel("API 协议", 8.5F);
+            protocolLabel.Dock = DockStyle.Fill;
+            protocolLabel.TextAlign = ContentAlignment.MiddleLeft;
+            table.Controls.Add(protocolLabel, 0, 6);
+            cmbApiProtocol = MakeSelect(260);
+            cmbApiProtocol.Items.AddRange(new object[] { "Responses（原生）", "Chat Completions", "Anthropic Messages" });
+            cmbApiProtocol.Dock = DockStyle.Fill;
+            table.Controls.Add(cmbApiProtocol, 1, 6);
+            table.SetColumnSpan(cmbApiProtocol, 2);
+            WireSettingControl(cmbApiProtocol);
+            configurationControls.Add(cmbApiProtocol);
+
+            lblProtocolHint = MakeMutedLabel("选择客户端接入地址、鉴权头和测试方式；不会修改 llama-server 启动参数。", 8.25F);
+            lblProtocolHint.Dock = DockStyle.Fill;
+            lblProtocolHint.AutoSize = false;
+            lblProtocolHint.TextAlign = ContentAlignment.MiddleLeft;
+            table.Controls.Add(lblProtocolHint, 0, 7);
+            table.SetColumnSpan(lblProtocolHint, 3);
             body.Controls.Add(table);
             frame.Controls.Add(body, 0, 1);
             card.Controls.Add(frame);
@@ -1480,9 +1519,9 @@ namespace LlamaServerManager
             page.RowCount = 4;
             page.RowStyles.Add(new RowStyle(SizeType.Absolute, 270F));
             page.RowStyles.Add(new RowStyle(SizeType.Absolute, 170F));
-            page.RowStyles.Add(new RowStyle(SizeType.Absolute, 200F));
+            page.RowStyles.Add(new RowStyle(SizeType.Absolute, 150F));
             page.RowStyles.Add(new RowStyle(SizeType.Absolute, 190F));
-            page.AutoScrollMinSize = new Size(0, 874);
+            page.AutoScrollMinSize = new Size(0, 824);
 
             APanel appearance = NewCard();
             appearance.Margin = new Padding(0, 0, 0, 14);
@@ -1555,10 +1594,9 @@ namespace LlamaServerManager
             TableLayoutPanel storageLayout = new TableLayoutPanel();
             storageLayout.Dock = DockStyle.Fill;
             storageLayout.ColumnCount = 2;
-            storageLayout.RowCount = 3;
+            storageLayout.RowCount = 2;
             storageLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 170F));
             storageLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            storageLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42F));
             storageLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42F));
             storageLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42F));
             Label storageTitle = MakeLabel("应用与数据", 14F, FontStyle.Bold);
@@ -1566,8 +1604,7 @@ namespace LlamaServerManager
             storageTitle.TextAlign = ContentAlignment.MiddleLeft;
             storageLayout.Controls.Add(storageTitle, 0, 0);
             storageLayout.SetColumnSpan(storageTitle, 2);
-            AddSettingText(storageLayout, 1, "运行模式", ConfigStore.IsPortable ? "便携版 · 配置保存在程序旁的 data 目录" : "安装版 · 配置保存在当前 Windows 用户目录");
-            AddSettingText(storageLayout, 2, "配置目录", ConfigStore.DataDirectory);
+            AddSettingText(storageLayout, 1, "配置目录", ConfigStore.DataDirectory);
             storage.Controls.Add(storageLayout);
             page.Controls.Add(storage, 0, 2);
 
@@ -2240,6 +2277,7 @@ namespace LlamaServerManager
                 txtMmproj.Text = profile.MmprojPath;
                 txtAlias.Text = profile.Alias;
                 txtApiKeyFile.Text = profile.ApiKeyFile;
+                SelectValue(cmbApiProtocol, ApiProtocolMode.DisplayName(profile.ApiProtocol), "Responses（原生）");
                 txtHost.Text = profile.Host;
                 txtAdvertisedHost.Text = profile.AdvertisedHost;
                 SetNumber(numPort, profile.Port);
@@ -2283,6 +2321,7 @@ namespace LlamaServerManager
             currentProfile.MmprojPath = txtMmproj.Text.Trim();
             currentProfile.Alias = string.IsNullOrWhiteSpace(txtAlias.Text) ? "local-model" : txtAlias.Text.Trim();
             currentProfile.ApiKeyFile = txtApiKeyFile.Text.Trim();
+            currentProfile.ApiProtocol = ApiProtocolMode.FromDisplayName(SelectText(cmbApiProtocol, "Responses（原生）"));
             currentProfile.Host = string.IsNullOrWhiteSpace(txtHost.Text) ? "127.0.0.1" : txtHost.Text.Trim();
             currentProfile.AdvertisedHost = string.IsNullOrWhiteSpace(txtAdvertisedHost.Text) ? "127.0.0.1" : txtAdvertisedHost.Text.Trim();
             currentProfile.Port = Decimal.ToInt32(numPort.Value);
@@ -2602,6 +2641,7 @@ namespace LlamaServerManager
             if (NetworkHelper.IsTcpPortInUse(currentProfile.Port))
             {
                 externalServiceDetected = true;
+                SetLocalModelState(LocalModelUiState.External);
                 UpdateActionButtons();
                 MessageBox.Show(this, "端口 " + currentProfile.Port + " 仍被其他进程占用。请先关闭原 BAT/llama-server，等待显存与端口释放，或改用其他端口。", "端口已占用", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
@@ -2654,6 +2694,8 @@ namespace LlamaServerManager
             {
                 processManager.Start(currentProfile);
                 serviceStartedUtc = DateTime.UtcNow;
+                lastGenerationActivityUtc = DateTime.MinValue;
+                SetLocalModelState(LocalModelUiState.Loading);
                 LockConfiguration(true);
             }
             catch (Exception ex)
@@ -2709,6 +2751,7 @@ namespace LlamaServerManager
             int port = currentProfile == null ? 0 : currentProfile.Port;
             lblHeroStatus.Text = "正在停止服务…";
             lblHeroStatus.ForeColor = palette.Warning;
+            SetLocalModelState(LocalModelUiState.Stopping);
             AppendLog("正在停止服务；确认进程和端口释放前不会允许重新启动。", false);
             bool exited = await processManager.StopAsync(15000);
             bool portReleased = exited && (port <= 0 || await NetworkHelper.WaitForTcpPortReleaseAsync(port, 15000));
@@ -2716,6 +2759,8 @@ namespace LlamaServerManager
             {
                 externalServiceDetected = false;
                 serviceStartedUtc = DateTime.MinValue;
+                lastGenerationActivityUtc = DateTime.MinValue;
+                SetLocalModelState(LocalModelUiState.Closed);
                 LockConfiguration(false);
                 lblHeroStatus.Text = "服务已停止";
                 lblHeroStatus.ForeColor = palette.Text;
@@ -2726,9 +2771,14 @@ namespace LlamaServerManager
             if (exited)
             {
                 externalServiceDetected = true;
+                SetLocalModelState(LocalModelUiState.External);
                 LockConfiguration(false);
             }
-            else LockConfiguration(true);
+            else
+            {
+                SetLocalModelState(LocalModelUiState.Failed);
+                LockConfiguration(true);
+            }
             lblHeroStatus.Text = exited ? "端口仍未释放" : "停止未完成";
             lblHeroStatus.ForeColor = palette.Danger;
             if (notifyFailure)
@@ -2757,30 +2807,77 @@ namespace LlamaServerManager
             btnTest.Loading = true;
             try
             {
-                AppendLog("开始测试 /v1/responses……", false);
-                ApiCheckResult responses = await LlamaApiClient.TestResponsesAsync(currentProfile);
-                AppendLog("Responses：" + responses.Summary, !responses.Success);
-                if (!string.IsNullOrWhiteSpace(responses.Body)) AppendLog(TrimForLog(responses.Body, 1600), !responses.Success);
-
-                AppendLog("开始测试 /v1/chat/completions……", false);
-                ApiCheckResult chat = await LlamaApiClient.TestChatCompletionsAsync(currentProfile);
-                AppendLog("Chat Completions：" + chat.Summary, !chat.Success);
-                if (!string.IsNullOrWhiteSpace(chat.Body)) AppendLog(TrimForLog(chat.Body, 1600), !chat.Success);
-
-                bool success = responses.Success && chat.Success;
-                MessageBox.Show(this, "Responses：" + responses.Summary + "\nChat Completions：" + chat.Summary,
-                    "双协议 API 测试", MessageBoxButtons.OK, success ? MessageBoxIcon.Information : MessageBoxIcon.Error);
+                string protocol = ApiProtocolMode.Normalize(currentProfile.ApiProtocol);
+                ModelProfile snapshot = currentProfile.Clone();
+                ApiCheckResult result = await TestProtocolAndLogAsync(snapshot, protocol);
+                MessageBox.Show(this,
+                    ApiProtocolMode.DisplayName(protocol) + "：" + result.Summary +
+                    (result.Success ? "\n\n当前接入协议可用。" : "\n\n请确认 llama.cpp 版本、模型别名、API Key 和服务日志。"),
+                    "当前协议测试", MessageBoxButtons.OK, result.Success ? MessageBoxIcon.Information : MessageBoxIcon.Error);
+            }
+            catch (Exception ex)
+            {
+                AppendLog("协议测试异常：" + ex.Message, true);
+                MessageBox.Show(this, ex.Message, "协议测试异常", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
             finally { btnTest.Loading = false; }
+        }
+
+        private async void TestAllProtocolsClicked(object sender, EventArgs e)
+        {
+            if (currentProfile == null || btnTestAllProtocols == null) return;
+            UpdateProfileFromControls();
+            btnTestAllProtocols.Loading = true;
+            bool testButtonWasEnabled = btnTest.Enabled;
+            btnTest.Enabled = false;
+            try
+            {
+                ModelProfile snapshot = currentProfile.Clone();
+                StringBuilder summary = new StringBuilder();
+                bool allSucceeded = true;
+                foreach (string protocol in ApiProtocolMode.Values())
+                {
+                    ApiCheckResult result = await TestProtocolAndLogAsync(snapshot, protocol);
+                    if (summary.Length > 0) summary.AppendLine();
+                    summary.Append(ApiProtocolMode.DisplayName(protocol)).Append("：").Append(result.Summary);
+                    allSucceeded = allSucceeded && result.Success;
+                }
+                summary.AppendLine().AppendLine();
+                summary.Append(allSucceeded ? "三个兼容端点均可用。" : "部分协议不可用；这通常与 llama.cpp 版本或分支能力有关，可继续使用测试成功的协议。");
+                MessageBox.Show(this, summary.ToString(), "全部协议测试", MessageBoxButtons.OK,
+                    allSucceeded ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+            }
+            catch (Exception ex)
+            {
+                AppendLog("全部协议测试异常：" + ex.Message, true);
+                MessageBox.Show(this, ex.Message, "协议测试异常", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally
+            {
+                btnTest.Enabled = testButtonWasEnabled;
+                btnTestAllProtocols.Loading = false;
+            }
+        }
+
+        private async Task<ApiCheckResult> TestProtocolAndLogAsync(ModelProfile profile, string protocol)
+        {
+            string normalized = ApiProtocolMode.Normalize(protocol);
+            string display = ApiProtocolMode.DisplayName(normalized);
+            string endpoint = LlamaApiClient.LocalBaseUrl(profile) + ApiProtocolMode.EndpointPath(normalized);
+            AppendLog("开始测试 " + display + " · " + endpoint + "……", false);
+            ApiCheckResult result = await LlamaApiClient.TestProtocolAsync(profile, normalized);
+            AppendLog(display + "：" + result.Summary, !result.Success);
+            if (!string.IsNullOrWhiteSpace(result.Body)) AppendLog(TrimForLog(result.Body, 1600), !result.Success);
+            return result;
         }
 
         private void CopyEndpointClicked(object sender, EventArgs e)
         {
             if (currentProfile == null) return;
             UpdateProfileFromControls();
-            string endpoint = LlamaApiClient.LanBaseUrl(currentProfile) + "/v1";
+            string endpoint = LlamaApiClient.ProtocolClientBaseUrl(currentProfile);
             Clipboard.SetText(endpoint);
-            AppendLog("已复制 API Base URL：" + endpoint, false);
+            AppendLog("已复制 " + ApiProtocolMode.DisplayName(currentProfile.ApiProtocol) + " Base URL：" + endpoint, false);
         }
 
         private void OpenWebUiClicked(object sender, EventArgs e)
@@ -2819,6 +2916,7 @@ namespace LlamaServerManager
                     lblApiMetric.ForeColor = palette.Success;
                     lblHeroStatus.Text = processManager.IsRunning ? "服务已就绪" : "检测到外部服务";
                     lblHeroStatus.ForeColor = processManager.IsRunning ? palette.Success : palette.Warning;
+                    SetLocalModelState(processManager.IsRunning ? LocalModelUiState.Ready : LocalModelUiState.External);
                 }
                 else if (health.StatusCode == 503)
                 {
@@ -2826,6 +2924,7 @@ namespace LlamaServerManager
                     lblApiMetric.ForeColor = palette.Warning;
                     lblHeroStatus.Text = "正在加载模型";
                     lblHeroStatus.ForeColor = palette.Warning;
+                    SetLocalModelState(LocalModelUiState.Loading);
                 }
                 else
                 {
@@ -2835,6 +2934,7 @@ namespace LlamaServerManager
                     {
                         lblHeroStatus.Text = "服务未运行";
                         lblHeroStatus.ForeColor = palette.Text;
+                        SetLocalModelState(externalServiceDetected ? LocalModelUiState.External : LocalModelUiState.Closed);
                     }
                 }
                 if (managed && !health.Success && serviceStartedUtc != DateTime.MinValue)
@@ -2845,6 +2945,7 @@ namespace LlamaServerManager
                         lblHeroStatus.Text = "仍在加载 " + ((int)loading.TotalMinutes) + " 分 " + loading.Seconds + " 秒";
                         lblHeroStatus.ForeColor = palette.Warning;
                         lblApiMetric.Text = "进程仍在运行";
+                        SetLocalModelState(LocalModelUiState.Loading);
                     }
                 }
                 UpdateActionButtons();
@@ -2923,6 +3024,20 @@ namespace LlamaServerManager
         private void UpdateModelMonitoring(LlamaPerformanceSample sample, ModelProfile profile, int processId)
         {
             if (sample == null || lblPromptSpeed == null) return;
+            if (!lifecycleBusy && !processManager.IsStopping)
+            {
+                if (sample.ServerReachable && sample.RequestsProcessing > 0)
+                {
+                    lastGenerationActivityUtc = DateTime.UtcNow;
+                    SetLocalModelState(LocalModelUiState.Generating);
+                }
+                else if (sample.ServerReachable)
+                    SetLocalModelState(processManager.IsRunning ? LocalModelUiState.Ready : LocalModelUiState.External);
+                else if (processManager.IsRunning)
+                    SetLocalModelState(LocalModelUiState.Loading);
+                else if (!externalServiceDetected)
+                    SetLocalModelState(LocalModelUiState.Closed);
+            }
             double contextPercent = sample.ContextUsagePercent;
             if (contextPercent <= 0D && sample.ContextHighWatermark > 0 && profile.ContextSize > 0)
                 contextPercent = Math.Min(100D, sample.ContextHighWatermark * 100D / profile.ContextSize);
@@ -3101,8 +3216,13 @@ namespace LlamaServerManager
                     {
                         lblHeroStatus.Text = "模型加载中";
                         lblHeroStatus.ForeColor = palette.Warning;
+                        SetLocalModelState(LocalModelUiState.Loading);
                     }
-                    else if (!lifecycleBusy && !processManager.IsStopping) LockConfiguration(false);
+                    else if (!lifecycleBusy && !processManager.IsStopping)
+                    {
+                        SetLocalModelState(externalServiceDetected ? LocalModelUiState.External : LocalModelUiState.Closed);
+                        LockConfiguration(false);
+                    }
                     UpdateActionButtons();
                 });
             }
@@ -3193,7 +3313,8 @@ namespace LlamaServerManager
                 if (btnAutoTune != null) btnAutoTune.Text = "请选择性能档位";
             }
             if (!commandEditorDirty && currentProfile != null && currentProfile.UseCustomCommand &&
-                !ReferenceEquals(sender, txtProfileName) && !ReferenceEquals(sender, txtAdvertisedHost))
+                !ReferenceEquals(sender, txtProfileName) && !ReferenceEquals(sender, txtAdvertisedHost) &&
+                !ReferenceEquals(sender, cmbApiProtocol))
             {
                 currentProfile.UseCustomCommand = false;
                 currentProfile.CustomCommand = string.Empty;
@@ -3235,7 +3356,70 @@ namespace LlamaServerManager
             if (currentProfile == null || lblEndpoint == null) return;
             if (!loadingControls) UpdateProfileFromControls();
             lblProfileSummary.Text = currentProfile.Name + "   ·   " + (string.IsNullOrWhiteSpace(currentProfile.ModelPath) ? "尚未选择模型" : Path.GetFileName(currentProfile.ModelPath));
-            lblEndpoint.Text = LlamaApiClient.LanBaseUrl(currentProfile) + "/v1   ·   model: " + currentProfile.Alias;
+            string protocol = ApiProtocolMode.Normalize(currentProfile.ApiProtocol);
+            if (lblEndpoint.Width > 0 && lblEndpoint.Width < 500)
+            {
+                string shortProtocol = protocol == ApiProtocolMode.ChatCompletions ? "Chat" :
+                    protocol == ApiProtocolMode.AnthropicMessages ? "Anthropic" : "Responses";
+                string shortAuth = protocol == ApiProtocolMode.AnthropicMessages ? "x-api-key" : "Bearer";
+                lblEndpoint.Text = shortProtocol + "   ·   " + ApiProtocolMode.EndpointPath(protocol) + "   ·   " + shortAuth;
+            }
+            else
+            {
+                lblEndpoint.Text = ApiProtocolMode.DisplayName(protocol) + "   ·   " + LlamaApiClient.ProtocolEndpointUrl(currentProfile) +
+                    "   ·   " + ApiProtocolMode.AuthenticationLabel(protocol) + "   ·   model: " + currentProfile.Alias;
+            }
+            if (lblProtocolHint != null)
+                lblProtocolHint.Text = ApiProtocolMode.Description(protocol) + " 此选择不改启动参数；所选 llama.cpp 版本支持时，其他兼容端点仍可同时使用。";
+        }
+
+        private void SetLocalModelState(LocalModelUiState state)
+        {
+            if (state == LocalModelUiState.Ready && lastGenerationActivityUtc != DateTime.MinValue &&
+                (DateTime.UtcNow - lastGenerationActivityUtc).TotalSeconds < 5D)
+                state = LocalModelUiState.Generating;
+            localModelUiState = state;
+            ApplyLocalModelState();
+        }
+
+        private void ApplyLocalModelState()
+        {
+            if (lblSidebarServiceStatus == null) return;
+            string text;
+            Color color = palette == null ? ForeColor : palette.Muted;
+            switch (localModelUiState)
+            {
+                case LocalModelUiState.Loading:
+                    text = "正在加载";
+                    if (palette != null) color = palette.Warning;
+                    break;
+                case LocalModelUiState.Ready:
+                    text = "已就绪";
+                    if (palette != null) color = palette.Success;
+                    break;
+                case LocalModelUiState.Generating:
+                    text = "输出中";
+                    if (palette != null) color = palette.Accent;
+                    break;
+                case LocalModelUiState.Stopping:
+                    text = "正在停止";
+                    if (palette != null) color = palette.Warning;
+                    break;
+                case LocalModelUiState.External:
+                    text = "外部服务";
+                    if (palette != null) color = palette.Warning;
+                    break;
+                case LocalModelUiState.Failed:
+                    text = "异常";
+                    if (palette != null) color = palette.Danger;
+                    break;
+                default:
+                    text = "已关闭";
+                    break;
+            }
+            lblSidebarServiceStatus.Text = "llama.cpp · " + text;
+            lblSidebarServiceStatus.ForeColor = color;
+            lblSidebarServiceStatus.AccessibleName = "本地大模型状态：" + text;
         }
 
         private void UpdateActionButtons()
@@ -3269,6 +3453,7 @@ namespace LlamaServerManager
             if (txtDashboardLog != null) { txtDashboardLog.BackColor = palette.LogBackground; txtDashboardLog.ForeColor = palette.LogText; }
             if (txtCommandEditor != null) { txtCommandEditor.BackColor = palette.LogBackground; txtCommandEditor.ForeColor = palette.LogText; }
             foreach (RealtimeMetricChart chart in MonitoringCharts()) chart.ApplyPalette(palette);
+            ApplyLocalModelState();
             foreach (KeyValuePair<AButton, string> choice in accentChoiceButtons)
             {
                 bool selected = string.Equals(choice.Value, config.AccentName, StringComparison.OrdinalIgnoreCase);

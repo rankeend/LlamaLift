@@ -264,9 +264,9 @@ namespace LlamaServerManager
 
         public static string GenerateKey()
         {
-            byte[] bytes = new byte[24];
+            byte[] bytes = new byte[32];
             using (RandomNumberGenerator generator = RandomNumberGenerator.Create()) generator.GetBytes(bytes);
-            StringBuilder text = new StringBuilder("llift_");
+            StringBuilder text = new StringBuilder("sk-llamalift-", 13 + bytes.Length * 2);
             foreach (byte value in bytes) text.Append(value.ToString("x2"));
             return text.ToString();
         }

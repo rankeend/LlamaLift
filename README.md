@@ -2,10 +2,19 @@
 
 > **本地模型，一键起飞。**
 
-> 当前版本：`v0.4.0-dev`
+> 当前版本：`v1.0.0-preview`
 > 发布状态：私有内测，暂不公开发布或分发。
 
 LlamaLift 是一个面向 Windows 的本地大模型运行管理器。它可以从 `ggml-org/llama.cpp` 官方 Release 安装和切换 Windows 运行时，根据本机硬件、GGUF 模型与目标模式生成可解释的启动参数，并在统一仪表盘中实时观察系统与推理性能。
+
+## v1.0 Preview 功能
+
+- 模型配置新增 API 协议切换，可在 `Responses`、`Chat Completions` 和 `Anthropic Messages` 三种 llama.cpp 兼容接口之间选择；切换只改变客户端接入提示和测试方式，不会篡改 llama-server 启动参数。
+- 服务总览提供“测试当前”和“测试全部”，按所选协议生成真实请求并使用正确的端点、请求体和鉴权头；OpenAI 风格使用 `Authorization: Bearer`，Anthropic 风格使用 `x-api-key`。
+- 仪表盘会显示协议对应的 Base URL、完整端点和鉴权方式；协议偏好随模型配置保存，旧配置安全迁移为 Responses 默认值。
+- 侧栏移除含义不清的“安装模式 / 便携模式”展示，改为实时显示本地模型状态：已关闭、正在加载、已就绪、输出中、正在停止、外部服务或异常。
+- 托管密钥统一生成 `sk-llamalift-<64 位小写十六进制>`，随机部分来自 32 字节密码学安全随机数；llama.cpp 本身仍接受任意非空 Key。
+- 发布前回归增加三种协议真实 HTTP 回环、协议切换与自定义命令隔离、实时状态可访问性、并发生命周期和多 DPI 交互验证。
 
 ## v0.4 开发功能
 
@@ -43,7 +52,7 @@ LlamaLift 是一个面向 Windows 的本地大模型运行管理器。它可以�
 - 启动、停止、重启服务，并支持托盘驻留。
 - 识别端口占用与外部 llama.cpp 服务。
 - 查看实时日志、PID、健康状态、预填充速度和生成速度。
-- 测试 `/v1/responses` 与 `/v1/chat/completions` 接口。
+- 测试 `/v1/responses`、`/v1/chat/completions` 与 `/v1/messages` 接口。
 - 支持浅色、深色和跟随 Windows 的界面主题。
 - 提供安装版与便携版构建流程。
 
@@ -93,12 +102,13 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\ui-test.ps1
 4. 选择“快速、均衡、极限”并点击“检测并生成方案”，确认后应用推荐参数。
 5. 如需高级控制，打开“参数工作台”编辑完整命令并点击“校验并保存”；根据建议修改，或确认风险后按原文保存。
 6. 点击“检测后端”，保存配置并启动服务；随后可在“性能监测”中观察系统与推理状态。
+7. 按接入软件选择 Responses、Chat Completions 或 Anthropic Messages，并复制页面显示的 Base URL；不确定时优先使用 Responses，旧客户端可选择 Chat Completions。
 
 便携版通过程序目录中的 `portable.flag` 启用，配置保存在程序旁的 `data/`；新安装版配置保存在 `%LOCALAPPDATA%\LlamaLift`。已有内测配置会继续从旧目录读取，不会因品牌升级丢失。
 
 ## 内测范围
 
-v0.4 当前重点验证：
+v1.0 Preview 当前重点验证：
 
 - GitHub 网络不稳定、下载中断、摘要不匹配和异常压缩包的恢复行为。
 - CPU、CUDA、Vulkan、SYCL、HIP 官方构建的安装与切换。
@@ -108,7 +118,8 @@ v0.4 当前重点验证：
 - 命令编辑后的双向同步、未知参数保留、错误阻断与完整命令往返一致性。
 - 三个参数预设槽的应用、覆盖保存、重命名，以及对模型/网络字段的隔离保护。
 - 多模型配置、启停、重启和托盘流程。
-- 本机与局域网 OpenAI 兼容 API 连接。
+- 本机与局域网 Responses、Chat Completions、Anthropic Messages 三类 API 连接及协议切换。
+- 侧栏模型状态在加载、就绪、输出、停止、异常和外部服务之间的准确转换。
 - 940×600 最小窗口、1320×840 标准窗口、125%/150%/175%/200% DPI、七页上下滚动状态与浅色/深色主题。
 - 异常退出、端口冲突和配置损坏后的恢复行为。
 
