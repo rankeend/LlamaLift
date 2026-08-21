@@ -8,9 +8,9 @@ using System.Windows.Forms;
 [assembly: AssemblyCompany("RankeeNd-Masen Hu")]
 [assembly: AssemblyProduct("LlamaLift")]
 [assembly: AssemblyCopyright("Copyright © 2026 RankeeNd-Masen Hu")]
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
-[assembly: AssemblyInformationalVersion("1.0.0-preview")]
+[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyFileVersion("1.1.0.0")]
+[assembly: AssemblyInformationalVersion("1.1.0-preview")]
 
 namespace LlamaServerManager
 {
@@ -39,7 +39,7 @@ namespace LlamaServerManager
         private static void ShowFatalError(Exception exception)
         {
             string message = exception == null ? "未知错误" : exception.ToString();
-            MessageBox.Show(
+            LlamaLiftDialog.Show(
                 "程序遇到未处理错误：\r\n\r\n" + message,
                 "LlamaLift " + AppVersion.DisplayVersion,
                 MessageBoxButtons.OK,

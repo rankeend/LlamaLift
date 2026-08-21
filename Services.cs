@@ -54,7 +54,13 @@ namespace LlamaServerManager
             {
                 Add(args, "--image-min-tokens", profile.ImageMinTokens.ToString());
             }
-            if (profile.Jinja) args.Add("--jinja");
+            bool hasChatTemplate = !string.IsNullOrWhiteSpace(profile.ChatTemplate) ||
+                !string.IsNullOrWhiteSpace(profile.ChatTemplateFile);
+            if (profile.Jinja || hasChatTemplate) args.Add("--jinja");
+            if (!string.IsNullOrWhiteSpace(profile.ChatTemplateFile))
+                Add(args, "--chat-template-file", profile.ChatTemplateFile);
+            else if (!string.IsNullOrWhiteSpace(profile.ChatTemplate))
+                Add(args, "--chat-template", profile.ChatTemplate);
             if (profile.DisableWebUi) args.Add("--no-webui");
             if (profile.NoMmap) args.Add("--no-mmap");
             if (profile.Mlock) args.Add("--mlock");
@@ -127,6 +133,8 @@ namespace LlamaServerManager
                 errors.Add("找不到模型文件：" + profile.ModelPath);
             if (!string.IsNullOrWhiteSpace(profile.MmprojPath) && !File.Exists(profile.MmprojPath))
                 errors.Add("找不到 mmproj 文件：" + profile.MmprojPath);
+            if (!string.IsNullOrWhiteSpace(profile.ChatTemplateFile) && !File.Exists(profile.ChatTemplateFile))
+                errors.Add("找不到聊天模板文件：" + profile.ChatTemplateFile);
             if (!string.IsNullOrWhiteSpace(profile.ApiKeyFile))
             {
                 string apiKeyError;

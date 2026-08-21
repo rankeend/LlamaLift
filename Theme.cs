@@ -68,6 +68,8 @@ namespace LlamaServerManager
 
     public static class ThemeService
     {
+        private static ThemePalette currentPalette = ThemePalette.Create(false, Color.FromArgb(0, 122, 255));
+
         private static readonly Dictionary<string, Color> Accents = new Dictionary<string, Color>(StringComparer.OrdinalIgnoreCase)
         {
             { "Blue", Color.FromArgb(0, 122, 255) },
@@ -90,6 +92,11 @@ namespace LlamaServerManager
                 : Accents["Blue"];
         }
 
+        public static ThemePalette CurrentPalette
+        {
+            get { return currentPalette; }
+        }
+
         public static ThemePalette Apply(AppConfig config, Form form)
         {
             AntdUI.TMode mode = IsSystemDark() ? AntdUI.TMode.Dark : AntdUI.TMode.Light;
@@ -104,6 +111,7 @@ namespace LlamaServerManager
             AntdUI.Style.SetInfo(accent);
 
             ThemePalette palette = ThemePalette.Create(AntdUI.Config.IsDark, accent);
+            currentPalette = palette;
             form.BackColor = palette.Background;
             form.ForeColor = palette.Text;
             ApplyControl(form, palette);

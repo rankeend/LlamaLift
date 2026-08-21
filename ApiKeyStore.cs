@@ -59,6 +59,42 @@ namespace LlamaServerManager
             }
         }
 
+        public static bool TryReadFirstKey(string path, out string key, out string error)
+        {
+            key = string.Empty;
+            error = string.Empty;
+            if (string.IsNullOrWhiteSpace(path)) return true;
+            try
+            {
+                string full = Path.GetFullPath(path);
+                if (!File.Exists(full))
+                {
+                    error = "文件不存在：" + full;
+                    return false;
+                }
+                using (FileStream stream = new FileStream(full, FileMode.Open, FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete))
+                using (StreamReader reader = new StreamReader(stream, Encoding.UTF8, true))
+                {
+                    string line;
+                    while ((line = reader.ReadLine()) != null)
+                    {
+                        string candidate = line.Trim();
+                        if (candidate.Length == 0) continue;
+                        key = candidate;
+                        return true;
+                    }
+                }
+                error = "API Key 文件中没有可用密钥。";
+                return false;
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+                return false;
+            }
+        }
+
         public static string FindReadableReplacement(string configuredPath)
         {
             if (string.IsNullOrWhiteSpace(configuredPath)) return string.Empty;

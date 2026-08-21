@@ -150,6 +150,18 @@ namespace LlamaServerManager
                         "重新选择与主模型匹配的 mmproj 文件，或删除 --mmproj 参数。");
             }
 
+            if (!string.IsNullOrWhiteSpace(profile.ChatTemplateFile))
+            {
+                if (!profile.ChatTemplateFile.EndsWith(".jinja", StringComparison.OrdinalIgnoreCase))
+                    Add(result, "chat-template-extension", CommandDiagnosticSeverity.Warning,
+                        "聊天模板文件不是常见的 .jinja 文件：" + profile.ChatTemplateFile,
+                        "确认文件内容为 llama.cpp 可读取的 Jinja 模板；建议使用 .jinja 扩展名。");
+                if (inspectEnvironment && !File.Exists(profile.ChatTemplateFile))
+                    Add(result, "chat-template-missing", CommandDiagnosticSeverity.Error,
+                        "找不到聊天模板文件：" + profile.ChatTemplateFile,
+                        "重新选择 .jinja 文件，或清空该项以使用 GGUF 内置聊天模板。");
+            }
+
             ValidateApiKey(result, profile.ApiKeyFile, inspectEnvironment);
             ValidateNumericAndMemoryHints(result, profile);
 

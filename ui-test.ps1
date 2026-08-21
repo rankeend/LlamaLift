@@ -5,6 +5,8 @@ $projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $testDir = Join-Path $projectDir "test-output\ui"
 $compiler = Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319\csc.exe"
 $antdDll = Join-Path $projectDir "packages\AntdUI.2.4.4\lib\net48\AntdUI.dll"
+$appIcon = Join-Path $projectDir "assets\LlamaServerManager-llama-icon-v2.ico"
+$appLogo = Join-Path $projectDir "assets\LlamaServerManager-llama-icon-v2.png"
 New-Item -ItemType Directory -Force -Path $testDir | Out-Null
 New-Item -ItemType File -Force -Path (Join-Path $testDir "portable.flag") | Out-Null
 Copy-Item -LiteralPath $antdDll -Destination $testDir -Force
@@ -13,18 +15,21 @@ $arguments = @(
     "/nologo", "/target:exe", "/platform:x64", "/optimize+", "/codepage:65001",
     "/main:LlamaServerManager.UiSmokeTest",
     "/out:$testDir\UiSmokeTest.exe",
+    "/win32icon:$appIcon", "/resource:$appLogo,LlamaLift.Logo.png",
     "/reference:System.dll", "/reference:System.Core.dll", "/reference:System.Drawing.dll",
     "/reference:System.Windows.Forms.dll", "/reference:System.Web.Extensions.dll", "/reference:System.Management.dll",
     "/reference:System.IO.Compression.dll", "/reference:System.IO.Compression.FileSystem.dll", "/reference:$antdDll",
     (Join-Path $projectDir "Models.cs"), (Join-Path $projectDir "Services.cs"),
     (Join-Path $projectDir "ApiProtocols.cs"),
+    (Join-Path $projectDir "ConnectionInfo.cs"),
     (Join-Path $projectDir "CommandEditing.cs"),
     (Join-Path $projectDir "CommandValidation.cs"),
     (Join-Path $projectDir "ApiKeyStore.cs"),
     (Join-Path $projectDir "ApiKeyManagerDialog.cs"),
     (Join-Path $projectDir "RuntimeServices.cs"), (Join-Path $projectDir "AdaptiveTuning.cs"),
     (Join-Path $projectDir "PerformanceMonitoring.cs"),
-    (Join-Path $projectDir "Theme.cs"), (Join-Path $projectDir "MainFormV2.cs"),
+    (Join-Path $projectDir "Theme.cs"), (Join-Path $projectDir "DialogUi.cs"), (Join-Path $projectDir "MainFormV2.cs"),
+    (Join-Path $projectDir "ConnectionInfoDialog.cs"),
     (Join-Path $projectDir "Program.cs"),
     (Join-Path $projectDir "UiSmokeTest.cs")
 )
@@ -36,7 +41,18 @@ $scenarios = @(
     @{ Name="Dark-Monitoring-Bottom"; Theme="Dark"; Page="monitoring"; Width=1320; Height=840; Scale="1.0"; Scroll="bottom" },
     @{ Name="Dark-Profiles"; Theme="Dark"; Page="profiles"; Width=1320; Height=840; Scale="1.0"; Scroll="top" },
     @{ Name="Dark-Parameters"; Theme="Dark"; Page="parameters"; Width=1320; Height=840; Scale="1.0"; Scroll="top" },
-    @{ Name="Dark-ApiKeys"; Theme="Dark"; Page="api-keys"; Width=780; Height=520; Scale="1.0"; Scroll="top" },
+    @{ Name="Light-ApiKeys"; Theme="Light"; Page="api-keys"; Width=860; Height=580; Scale="1.0"; Scroll="top" },
+    @{ Name="Dark-ApiKeys"; Theme="Dark"; Page="api-keys"; Width=860; Height=580; Scale="1.0"; Scroll="top" },
+    @{ Name="Light-Connection-Info"; Theme="Light"; Page="connection-info"; Width=790; Height=590; Scale="1.0"; Scroll="top" },
+    @{ Name="Dark-Connection-Info"; Theme="Dark"; Page="connection-info"; Width=790; Height=590; Scale="1.0"; Scroll="top" },
+    @{ Name="Light-Message-Dialog"; Theme="Light"; Page="message-dialog"; Width=560; Height=300; Scale="1.0"; Scroll="top" },
+    @{ Name="Dark-Message-Dialog"; Theme="Dark"; Page="message-dialog"; Width=560; Height=300; Scale="1.0"; Scroll="top" },
+    @{ Name="Light-Prompt-Dialog"; Theme="Light"; Page="prompt-dialog"; Width=540; Height=270; Scale="1.0"; Scroll="top" },
+    @{ Name="Dark-Prompt-Dialog"; Theme="Dark"; Page="prompt-dialog"; Width=540; Height=270; Scale="1.0"; Scroll="top" },
+    @{ Name="Light-ApiKeys-150pct"; Theme="Light"; Page="api-keys"; Width=1290; Height=870; Scale="1.5"; Scroll="top" },
+    @{ Name="Dark-Connection-Info-150pct"; Theme="Dark"; Page="connection-info"; Width=1185; Height=885; Scale="1.5"; Scroll="top" },
+    @{ Name="Light-Message-Dialog-200pct"; Theme="Light"; Page="message-dialog"; Width=1120; Height=600; Scale="2.0"; Scroll="top" },
+    @{ Name="Dark-Prompt-Dialog-150pct"; Theme="Dark"; Page="prompt-dialog"; Width=810; Height=405; Scale="1.5"; Scroll="top" },
     @{ Name="Light-Runtimes"; Theme="Light"; Page="runtimes"; Width=1320; Height=840; Scale="1.0"; Scroll="top" },
     @{ Name="Dark-Logs"; Theme="Dark"; Page="logs"; Width=1320; Height=840; Scale="1.0"; Scroll="top" },
     @{ Name="Light-Settings"; Theme="Light"; Page="settings"; Width=1320; Height=840; Scale="1.0"; Scroll="top" },
@@ -62,7 +78,7 @@ if (-not [string]::IsNullOrWhiteSpace($ScenarioFilter)) {
 }
 foreach ($scenario in $scenarios) {
     if (Test-Path -LiteralPath $uiError) { Remove-Item -LiteralPath $uiError -Force }
-    $image = Join-Path $testDir ("LlamaLift-v1.0-preview-" + $scenario.Name + ".png")
+    $image = Join-Path $testDir ("LlamaLift-v1.1-preview-" + $scenario.Name + ".png")
     & (Join-Path $testDir "UiSmokeTest.exe") $image $scenario.Theme $scenario.Page $scenario.Width $scenario.Height $scenario.Scale $scenario.Scroll
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $image)) { throw ("UI render test failed: " + $scenario.Name) }
     $images += $image

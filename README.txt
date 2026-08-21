@@ -1,9 +1,9 @@
-LlamaLift v1.0.0-preview
+LlamaLift v1.1.0-preview
 =====================
 
 本地模型，一键起飞。
 
-状态：私有内测版，暂不公开发布或分发。
+状态：Preview 公开测试版。
 
 这是一个面向 Windows llama.cpp 用户的桌面服务管理器。它可以从 ggml-org/llama.cpp
 官方 Release 安装 Windows 运行时，并根据本机硬件、GGUF 模型和快速/均衡/极限目标
@@ -47,6 +47,7 @@ LlamaLift v1.0.0-preview
 --------
 - 新安装版：%LOCALAPPDATA%\LlamaLift（旧内测配置目录仍可继续读取）
 - 便携版：程序目录下的 data 文件夹
+- 安装包同时支持首次安装和原地更新；更新无需卸载旧版，并会保留上述配置、API Key 和运行时登记。
 - 删除模型配置不会删除 GGUF、mmproj 或 llama.cpp 文件。
 
 兼容性

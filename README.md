@@ -7,15 +7,15 @@
 面向 Windows 的 llama.cpp 桌面控制中心。<br>
 从运行时安装、硬件识别和自适应调参，到服务管理、性能监测与 API 接入，都在一个界面完成。
 
-[![Version](https://img.shields.io/badge/version-v1.0.0--preview-007AFF?style=flat-square)](https://github.com/rankeend/LlamaLift/releases/tag/v1.0.0-preview)
+[![Version](https://img.shields.io/badge/version-v1.1.0--preview-007AFF?style=flat-square)](https://github.com/rankeend/LlamaLift/releases/tag/v1.1.0-preview)
 ![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-1D1D1F?style=flat-square&logo=windows11&logoColor=white)
 ![.NET Framework](https://img.shields.io/badge/.NET%20Framework-4.8-512BD4?style=flat-square&logo=dotnet&logoColor=white)
 ![llama.cpp](https://img.shields.io/badge/runtime-llama.cpp-30B85A?style=flat-square)
-![Tests](https://img.shields.io/badge/offline%20checks-106%20passed-30B85A?style=flat-square)
+![Tests](https://img.shields.io/badge/offline%20checks-115%20passed-30B85A?style=flat-square)
 
-**[下载 v1.0 Preview](https://github.com/rankeend/LlamaLift/releases/tag/v1.0.0-preview)** · [快速开始](#快速开始) · [查看更新](CHANGELOG.md) · [内测清单](docs/INTERNAL-TESTING-v1.0-preview.md)
+**[下载 v1.1 Preview](https://github.com/rankeend/LlamaLift/releases/tag/v1.1.0-preview)** · [快速开始](#快速开始) · [查看更新](CHANGELOG.md) · [发布说明](docs/RELEASE-v1.1.0-preview.md)
 
-> 当前为最后一个私有内测预览版本。下一阶段将进入公开测试。
+> 当前为 Preview 公开测试版本。安装包同时支持首次安装与保留配置的原地更新。
 
 </div>
 
@@ -76,11 +76,13 @@ LlamaLift 把这条链路整理成一个可见、可保存、可验证的工作�
 
 ### 1. 下载
 
-从 [v1.0.0-preview Release](https://github.com/rankeend/LlamaLift/releases/tag/v1.0.0-preview) 获取：
+从 [v1.1.0-preview Release](https://github.com/rankeend/LlamaLift/releases/tag/v1.1.0-preview) 获取：
 
-- `LlamaLift-v1.0.0-preview-Setup.exe`：安装版。
-- `LlamaLift-v1.0.0-preview-portable-win-x64.zip`：解压即用的便携版。
-- `LlamaLift-v1.0.0-preview-SHA256SUMS.txt`：发布文件校验值。
+- `LlamaLift-v1.1.0-preview-Setup.exe`：首次安装与原地更新二合一安装包。
+- `LlamaLift-v1.1.0-preview-portable-win-x64.zip`：解压即用的便携版。
+- `LlamaLift-v1.1.0-preview-SHA256SUMS.txt`：发布文件校验值。
+
+已经安装 v1.0 或更早安装版时，直接运行新版 `Setup.exe` 即可更新，无需先卸载。安装器会复用原安装目录，并保留 `%LOCALAPPDATA%\LlamaLift` 中的模型配置、API Key、运行时登记和日志。便携版仍使用自身目录中的 `data/`，不要与安装版混用更新方式。
 
 > 当前构建尚未进行 Authenticode 数字签名，Windows SmartScreen 可能显示“未知发布者”。请只从本仓库 Release 下载，并核对 SHA-256。
 
@@ -107,11 +109,11 @@ LlamaLift 把这条链路整理成一个可见、可保存、可验证的工作�
 
 ## 已验证范围
 
-v1.0 Preview 在发布前通过：
+v1.1 Preview 在发布前通过：
 
-- **106 项离线检查**：覆盖配置迁移、参数往返、未知参数保留、TurboQuant 能力矩阵、真实三协议 HTTP 回环、API Key、ZIP 安全和服务生命周期故障注入。
-- **22 个 UI 场景**：覆盖七个页面、940×600、1320×840、浅色/深色，以及 125%、150%、175%、200% 缩放。
-- **构建验证**：便携 ZIP 内容检查、Inno Setup 安装包编译、SHA-256 复核和最终 EXE 启动检查。
+- **115 项离线检查**：覆盖配置迁移、聊天模板、连接信息、参数往返、真实三协议 HTTP 回环、API Key、ZIP 安全和服务生命周期故障注入。
+- **33 个 UI 场景**：覆盖七个主页面、四类弹窗、940×600、浅色/深色，以及 125%、150%、175%、200% 缩放。
+- **升级与构建验证**：固定 AppId、用户数据隔离、便携标记隔离、版本一致性、ZIP 内容、Inno Setup 编译和 SHA-256 复核。
 
 不同 GPU、驱动、llama.cpp 分支和大型 GGUF 仍需要实机验证。提交反馈时请附 Windows 版本、CPU/GPU、llama.cpp 版本、模型量化、复现步骤和脱敏日志。
 
@@ -164,20 +166,22 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\test.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\ui-test.ps1
 ```
 
-安装包使用 Inno Setup 6：
+正式发布包使用 Inno Setup 6，并统一通过下列命令生成安装/更新二合一包、便携包和 SHA-256：
 
 ```powershell
-& "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" .\installer\LlamaLift.iss
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\release.ps1
 ```
+
+后续版本必须遵守 [安装与发布契约](docs/PACKAGING.md)，不得变更固定 AppId，也不得把安装版用户数据放进 `{app}`。
 
 ## 项目状态
 
-- 当前版本：`v1.0.0-preview`
-- 发布阶段：最后一个私有内测预览
-- 下一阶段：公开测试、更多实机兼容性数据、发布签名与公开贡献规范
-- 反馈入口：私有内测期间请使用仓库 Issues
+- 当前版本：`v1.1.0-preview`
+- 发布阶段：Preview 公开测试
+- 下一阶段：更多实机兼容性数据、发布签名与正式版工程化
+- 反馈入口：GitHub Issues
 
-版本历史见 [CHANGELOG.md](CHANGELOG.md)，本轮发布说明见 [docs/RELEASE-v1.0.0-preview.md](docs/RELEASE-v1.0.0-preview.md)。
+版本历史见 [CHANGELOG.md](CHANGELOG.md)，本轮发布说明见 [docs/RELEASE-v1.1.0-preview.md](docs/RELEASE-v1.1.0-preview.md)。
 
 ## 致谢
 

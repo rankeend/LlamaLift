@@ -32,9 +32,28 @@ namespace LlamaServerManager
             config.ThemeMode = args.Length > 1 ? args[1] : "Light";
             config.AccentName = "Blue";
             ConfigStore.Save(config);
+            float dialogScale = args.Length > 5 ? Single.Parse(args[5], System.Globalization.CultureInfo.InvariantCulture) : 1F;
             if (args.Length > 2 && string.Equals(args[2], "api-keys", StringComparison.OrdinalIgnoreCase))
             {
-                RenderApiKeyDialog(output, config);
+                RenderApiKeyDialog(output, config, dialogScale);
+                Console.WriteLine("AUDIT PASS: " + output);
+                return;
+            }
+            if (args.Length > 2 && string.Equals(args[2], "connection-info", StringComparison.OrdinalIgnoreCase))
+            {
+                RenderConnectionInfoDialog(output, config, dialogScale);
+                Console.WriteLine("AUDIT PASS: " + output);
+                return;
+            }
+            if (args.Length > 2 && string.Equals(args[2], "message-dialog", StringComparison.OrdinalIgnoreCase))
+            {
+                RenderMessageDialog(output, config, dialogScale);
+                Console.WriteLine("AUDIT PASS: " + output);
+                return;
+            }
+            if (args.Length > 2 && string.Equals(args[2], "prompt-dialog", StringComparison.OrdinalIgnoreCase))
+            {
+                RenderPromptDialog(output, config, dialogScale);
                 Console.WriteLine("AUDIT PASS: " + output);
                 return;
             }
@@ -94,7 +113,7 @@ namespace LlamaServerManager
             Console.WriteLine("AUDIT PASS: " + output);
         }
 
-        private static void RenderApiKeyDialog(string output, AppConfig config)
+        private static void RenderApiKeyDialog(string output, AppConfig config, float scale)
         {
             bool dark = string.Equals(config.ThemeMode, "Dark", StringComparison.OrdinalIgnoreCase);
             Color accent = ThemeService.GetAccent(config.AccentName);
@@ -105,6 +124,7 @@ namespace LlamaServerManager
             {
                 using (ApiKeyManagerDialog dialog = new ApiKeyManagerDialog(testKey.FilePath, ThemePalette.Create(dark, accent)))
                 {
+                    if (Math.Abs(scale - 1F) > 0.01F) dialog.Scale(new SizeF(scale, scale));
                     dialog.ShowInTaskbar = false;
                     dialog.StartPosition = FormStartPosition.Manual;
                     dialog.Location = new Point(-20000, -20000);
@@ -116,8 +136,9 @@ namespace LlamaServerManager
                     Application.DoEvents();
                     List<string> problems = new List<string>();
                     AuditVisibleBounds(dialog, problems);
+                    AuditDialogChrome(dialog, problems);
                     FieldInfo secretField = typeof(ApiKeyManagerDialog).GetField("txtKeys", BindingFlags.Instance | BindingFlags.NonPublic);
-                    TextBox secretBox = secretField == null ? null : secretField.GetValue(dialog) as TextBox;
+                    AntdUI.Input secretBox = secretField == null ? null : secretField.GetValue(dialog) as AntdUI.Input;
                     if (secretBox == null || !secretBox.ReadOnly || secretBox.Text.Contains("test-only-secret"))
                         problems.Add("API Key dialog does not mask secrets by default");
                     if (problems.Count > 0)
@@ -135,6 +156,149 @@ namespace LlamaServerManager
                 }
             }
             finally { try { store.Delete(testKey.FilePath); } catch { } }
+        }
+
+        private static void RenderConnectionInfoDialog(string output, AppConfig config, float scale)
+        {
+            bool dark = string.Equals(config.ThemeMode, "Dark", StringComparison.OrdinalIgnoreCase);
+            Color accent = ThemeService.GetAccent(config.AccentName);
+            if (dark && string.Equals(config.AccentName, "Blue", StringComparison.OrdinalIgnoreCase)) accent = Color.FromArgb(10, 132, 255);
+            ConnectionInfoSnapshot info = new ConnectionInfoSnapshot
+            {
+                ProviderId = "llamalift-ornith-1-5",
+                ApiProtocol = "Responses（原生）",
+                ApiAddress = "http://127.0.0.1:8080/v1",
+                ApiKey = "sk-llamalift-test-only-secret",
+                HasApiKey = true,
+                ModelFullName = "Ornith-1.5-35B-A3B-AD-IQ3_XXS-IQ2_S.gguf",
+                MaximumContext = "131,072 tokens"
+            };
+            using (ConnectionInfoDialog dialog = new ConnectionInfoDialog(info, ThemePalette.Create(dark, accent)))
+            {
+                if (Math.Abs(scale - 1F) > 0.01F) dialog.Scale(new SizeF(scale, scale));
+                dialog.ShowInTaskbar = false;
+                dialog.StartPosition = FormStartPosition.Manual;
+                dialog.Location = new Point(-20000, -20000);
+                dialog.Show();
+                dialog.Location = new Point(-20000, -20000);
+                Application.DoEvents();
+                dialog.PerformLayout();
+                Thread.Sleep(250);
+                Application.DoEvents();
+                List<string> problems = new List<string>();
+                AuditVisibleBounds(dialog, problems);
+                AuditDialogChrome(dialog, problems);
+                Control keyControl = FindControlByName(dialog, "connectionValue3");
+                CopyValueCard keyCard = keyControl as CopyValueCard;
+                CopyValueCard providerCard = FindControlByName(dialog, "connectionValue0") as CopyValueCard;
+                Control eye = FindControlByName(dialog, "toggleApiKeyVisibility");
+                if (CountControls<CopyValueCard>(dialog) != 6)
+                    problems.Add("connection info dialog does not expose all six copyable values");
+                if (keyCard == null || keyCard.SecretRevealed || keyCard.CompleteValue != info.ApiKey)
+                    problems.Add("connection info dialog does not keep the complete API Key masked by default");
+                if (eye == null || string.IsNullOrWhiteSpace(eye.AccessibleName))
+                    problems.Add("connection info dialog has no accessible API Key visibility control");
+                if (providerCard == null || providerCard.CopyActionLabel != "点此复制")
+                    problems.Add("connection copy action does not use the requested 点此复制 label");
+                if (ContainsControlText(dialog, "左键单击任意一行即可复制完整内容，无需选中文本。"))
+                    problems.Add("the removed connection helper subtitle is still visible");
+                if (keyCard != null)
+                {
+                    Clipboard.Clear();
+                    MethodInfo click = typeof(CopyValueCard).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic);
+                    if (click == null) problems.Add("connection copy card does not expose a left-click interaction");
+                    else
+                    {
+                        click.Invoke(keyCard, new object[] { EventArgs.Empty });
+                        if (Clipboard.GetText() != info.ApiKey)
+                            problems.Add("left-clicking a connection card does not copy the complete value");
+                    }
+                }
+                if (problems.Count > 0)
+                {
+                    string message = "Connection info dialog audit failed:\r\n" + string.Join("\r\n", problems.ToArray());
+                    try { File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ui-error.txt"), message, System.Text.Encoding.UTF8); } catch { }
+                    Console.Error.WriteLine(message);
+                    dialog.Close();
+                    Environment.ExitCode = 2;
+                    return;
+                }
+                dialog.Refresh();
+                CaptureControl(dialog, output);
+                dialog.Close();
+            }
+        }
+
+        private static void RenderMessageDialog(string output, AppConfig config, float scale)
+        {
+            ThemePalette palette = DialogPalette(config);
+            using (LlamaLiftMessageDialog dialog = new LlamaLiftMessageDialog(
+                "当前端口仍被其他进程占用。请先关闭原 BAT / llama-server，等待显存与端口释放，或改用其他端口。",
+                "端口已占用", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, palette))
+            {
+                if (Math.Abs(scale - 1F) > 0.01F) dialog.Scale(new SizeF(scale, scale));
+                PrepareDialogForCapture(dialog);
+                List<string> problems = new List<string>();
+                AuditVisibleBounds(dialog, problems);
+                AuditDialogChrome(dialog, problems);
+                if (FindControlByName(dialog, "messageDialogBody") == null || dialog.AcceptButton == null || dialog.CancelButton == null)
+                    problems.Add("themed message dialog is missing its body or keyboard actions");
+                FinishDialogCapture(dialog, output, "Message dialog", problems);
+            }
+        }
+
+        private static void RenderPromptDialog(string output, AppConfig config, float scale)
+        {
+            ThemePalette palette = DialogPalette(config);
+            using (LlamaLiftPromptDialog dialog = new LlamaLiftPromptDialog("新配置名称", "新建模型配置", "我的 llama.cpp 服务", palette))
+            {
+                if (Math.Abs(scale - 1F) > 0.01F) dialog.Scale(new SizeF(scale, scale));
+                PrepareDialogForCapture(dialog);
+                List<string> problems = new List<string>();
+                AuditVisibleBounds(dialog, problems);
+                AuditDialogChrome(dialog, problems);
+                Control input = FindControlByName(dialog, "promptInput");
+                if (!(input is AntdUI.Input) || dialog.AcceptButton == null || dialog.CancelButton == null)
+                    problems.Add("themed prompt dialog is missing its accessible input or keyboard actions");
+                FinishDialogCapture(dialog, output, "Prompt dialog", problems);
+            }
+        }
+
+        private static ThemePalette DialogPalette(AppConfig config)
+        {
+            bool dark = string.Equals(config.ThemeMode, "Dark", StringComparison.OrdinalIgnoreCase);
+            Color accent = ThemeService.GetAccent(config.AccentName);
+            if (dark && string.Equals(config.AccentName, "Blue", StringComparison.OrdinalIgnoreCase)) accent = Color.FromArgb(10, 132, 255);
+            return ThemePalette.Create(dark, accent);
+        }
+
+        private static void PrepareDialogForCapture(Form dialog)
+        {
+            dialog.ShowInTaskbar = false;
+            dialog.StartPosition = FormStartPosition.Manual;
+            dialog.Location = new Point(-20000, -20000);
+            dialog.Show();
+            dialog.Location = new Point(-20000, -20000);
+            Application.DoEvents();
+            dialog.PerformLayout();
+            Thread.Sleep(250);
+            Application.DoEvents();
+        }
+
+        private static void FinishDialogCapture(Form dialog, string output, string name, List<string> problems)
+        {
+            if (problems.Count > 0)
+            {
+                string message = name + " audit failed:\r\n" + string.Join("\r\n", problems.ToArray());
+                try { File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ui-error.txt"), message, System.Text.Encoding.UTF8); } catch { }
+                Console.Error.WriteLine(message);
+                dialog.Close();
+                Environment.ExitCode = 2;
+                return;
+            }
+            dialog.Refresh();
+            CaptureControl(dialog, output);
+            dialog.Close();
         }
 
         private static void CaptureControl(Control control, string output)
@@ -330,6 +494,8 @@ namespace LlamaServerManager
                 if (restartBounds.IntersectsWith(stopBounds) || stopBounds.IntersectsWith(startBounds) || !actionBounds.Contains(restartBounds) || !actionBounds.Contains(stopBounds) || !actionBounds.Contains(startBounds))
                     problems.Add("dashboard lifecycle actions overlap or exceed their container");
             }
+            if (FindControl(form, "连接信息") == null)
+                problems.Add("dashboard has no way to reopen the connection information dialog");
 
             FieldInfo commandPageField = typeof(MainFormV2).GetField("commandPage", BindingFlags.Instance | BindingFlags.NonPublic);
             FieldInfo commandEditorField = typeof(MainFormV2).GetField("txtCommandEditor", BindingFlags.Instance | BindingFlags.NonPublic);
@@ -378,7 +544,7 @@ namespace LlamaServerManager
 
             if (profilePage != null && profilePage.Visible)
             {
-                string[] inputFields = new string[] { "txtProfileName", "txtServerExe", "txtModel", "txtMmproj", "txtAlias", "txtApiKeyFile", "txtHost", "txtAdvertisedHost", "txtGpuLayers", "txtExtraArgs" };
+                string[] inputFields = new string[] { "txtProfileName", "txtServerExe", "txtModel", "txtMmproj", "txtAlias", "txtApiKeyFile", "txtChatTemplate", "txtHost", "txtAdvertisedHost", "txtGpuLayers", "txtExtraArgs" };
                 foreach (string inputField in inputFields)
                 {
                     FieldInfo inputInfo = typeof(MainFormV2).GetField(inputField, BindingFlags.Instance | BindingFlags.NonPublic);
@@ -391,6 +557,25 @@ namespace LlamaServerManager
                 AntdUI.Select protocol = protocolField == null ? null : protocolField.GetValue(form) as AntdUI.Select;
                 if (protocol == null || protocol.Items.Count != 3 || protocol.Width < 120)
                     problems.Add("profile page does not provide all three API protocol choices");
+
+                FieldInfo toolTipField = typeof(MainFormV2).GetField("parameterToolTip", BindingFlags.Instance | BindingFlags.NonPublic);
+                ToolTip parameterToolTip = toolTipField == null ? null : toolTipField.GetValue(form) as ToolTip;
+                string[] parameterLabels = new string[]
+                {
+                    "自适应", "监听地址", "公开地址", "端口", "上下文", "并发数", "GPU 层",
+                    "KV Cache K", "KV Cache V", "Fit 余量 MB", "图片 tokens", "CPU 线程", "Batch",
+                    "Ubatch", "推理解析", "自动 Fit", "Flash Attention", "启用 Jinja", "禁用 WebUI",
+                    "No mmap", "Mlock", "性能指标", "自定义参数"
+                };
+                if (parameterToolTip == null || profileRuntimeScroll == null)
+                    problems.Add("runtime parameter tooltip service is missing");
+                else
+                    foreach (string parameterLabel in parameterLabels)
+                    {
+                        Label label = FindLabel(profileRuntimeScroll, parameterLabel);
+                        if (label == null || string.IsNullOrWhiteSpace(parameterToolTip.GetToolTip(label)))
+                            problems.Add("runtime parameter has no beginner tooltip: " + parameterLabel);
+                    }
             }
 
             AuditChildren(form, problems);
@@ -561,6 +746,44 @@ namespace LlamaServerManager
             {
                 if (string.Equals(child.Text, text, StringComparison.Ordinal)) return child;
                 Control nested = FindControl(child, text);
+                if (nested != null) return nested;
+            }
+            return null;
+        }
+
+        private static void AuditDialogChrome(Form dialog, List<string> problems)
+        {
+            Control bar = FindControlByName(dialog, "dialogCustomTitleBar");
+            Control title = FindControlByName(dialog, "dialogCustomTitle");
+            Control close = FindControlByName(dialog, "dialogCustomClose");
+            Control logo = FindControlByName(dialog, "dialogBrandLogo");
+            if (dialog.FormBorderStyle != FormBorderStyle.None)
+                problems.Add("dialog still uses the Windows default title bar");
+            if (bar == null || bar.Height < 40 || title == null || close == null)
+                problems.Add("dialog custom title bar is incomplete");
+            if (!(logo is DialogBrandMark) || !DialogBrandMark.OfficialLogoAvailable)
+                problems.Add("dialog title bar does not use the embedded official LlamaLift logo");
+            if (close != null && (string.IsNullOrWhiteSpace(close.AccessibleName) || close.Cursor != Cursors.Hand))
+                problems.Add("dialog custom close button is not accessible or visibly interactive");
+            if (dialog.Region == null)
+                problems.Add("borderless dialog has no rounded window region");
+        }
+
+        private static bool ContainsControlText(Control parent, string value)
+        {
+            if (string.Equals(parent.Text, value, StringComparison.Ordinal)) return true;
+            foreach (Control child in parent.Controls)
+                if (ContainsControlText(child, value)) return true;
+            return false;
+        }
+
+        private static Control FindControlByName(Control parent, string name)
+        {
+            if (parent == null) return null;
+            if (string.Equals(parent.Name, name, StringComparison.Ordinal)) return parent;
+            foreach (Control child in parent.Controls)
+            {
+                Control nested = FindControlByName(child, name);
                 if (nested != null) return nested;
             }
             return null;

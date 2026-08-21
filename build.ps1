@@ -1,13 +1,14 @@
 $ErrorActionPreference = "Stop"
 
 $projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$version = "1.0.0-preview"
+$version = "1.1.0-preview"
 $distDir = Join-Path $projectDir "dist"
 $installerDistDir = Join-Path $projectDir "dist-installer"
 $releaseDir = Join-Path $projectDir "release"
 $compiler = Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319\csc.exe"
 $antdDll = Join-Path $projectDir "packages\AntdUI.2.4.4\lib\net48\AntdUI.dll"
 $appIcon = Join-Path $projectDir "assets\LlamaServerManager-llama-icon-v2.ico"
+$appLogo = Join-Path $projectDir "assets\LlamaServerManager-llama-icon-v2.png"
 
 if (-not (Test-Path -LiteralPath $compiler)) {
     throw "找不到 Windows 自带 C# 编译器：$compiler"
@@ -20,6 +21,9 @@ if (-not (Test-Path -LiteralPath $antdDll)) {
 if (-not (Test-Path -LiteralPath $appIcon)) {
     throw "找不到应用图标：$appIcon"
 }
+if (-not (Test-Path -LiteralPath $appLogo)) {
+    throw "找不到应用 Logo：$appLogo"
+}
 
 New-Item -ItemType Directory -Force -Path $distDir | Out-Null
 New-Item -ItemType Directory -Force -Path $installerDistDir | Out-Null
@@ -30,6 +34,7 @@ Get-ChildItem -LiteralPath $installerDistDir -Force | Remove-Item -Recurse -Forc
 $sources = @(
     (Join-Path $projectDir "Models.cs"),
     (Join-Path $projectDir "ApiProtocols.cs"),
+    (Join-Path $projectDir "ConnectionInfo.cs"),
     (Join-Path $projectDir "Services.cs"),
     (Join-Path $projectDir "CommandEditing.cs"),
     (Join-Path $projectDir "CommandValidation.cs"),
@@ -39,6 +44,8 @@ $sources = @(
     (Join-Path $projectDir "AdaptiveTuning.cs"),
     (Join-Path $projectDir "PerformanceMonitoring.cs"),
     (Join-Path $projectDir "Theme.cs"),
+    (Join-Path $projectDir "DialogUi.cs"),
+    (Join-Path $projectDir "ConnectionInfoDialog.cs"),
     (Join-Path $projectDir "MainFormV2.cs"),
     (Join-Path $projectDir "Program.cs")
 )
@@ -52,6 +59,7 @@ $arguments = @(
     "/codepage:65001",
     "/win32manifest:$projectDir\app.manifest",
     "/win32icon:$appIcon",
+    "/resource:$appLogo,LlamaLift.Logo.png",
     "/out:$distDir\LlamaLift.exe",
     "/reference:System.dll",
     "/reference:System.Core.dll",

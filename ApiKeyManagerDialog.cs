@@ -1,21 +1,24 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.IO;
 using System.Windows.Forms;
+using AButton = AntdUI.Button;
+using AInput = AntdUI.Input;
 
 namespace LlamaServerManager
 {
-    public sealed class ApiKeyManagerDialog : Form
+    public sealed class ApiKeyManagerDialog : LlamaLiftDialogForm
     {
         private readonly ApiKeyStore store;
         private readonly ThemePalette palette;
         private readonly string initialPath;
         private readonly ListBox lstKeys;
-        private readonly TextBox txtName;
-        private readonly TextBox txtKeys;
+        private readonly AInput txtName;
+        private readonly AInput txtKeys;
         private readonly Label lblSummary;
-        private readonly Button btnReveal;
+        private readonly AButton btnReveal;
         private List<ManagedApiKeyFile> records;
         private string secretContent;
         private bool secretRevealed;
@@ -40,21 +43,23 @@ namespace LlamaServerManager
             MaximizeBox = false;
             ShowInTaskbar = false;
             FormBorderStyle = FormBorderStyle.FixedDialog;
-            ClientSize = new Size(780, 520);
+            ClientSize = new Size(860, 580);
+            MinimumSize = new Size(800, 550);
             Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
+            AutoScaleMode = AutoScaleMode.Dpi;
             BackColor = palette.Background;
             ForeColor = palette.Text;
 
             TableLayoutPanel root = new TableLayoutPanel();
             root.Dock = DockStyle.Fill;
-            root.Padding = new Padding(22);
+            root.Padding = new Padding(24, 20, 24, 16);
             root.ColumnCount = 2;
             root.RowCount = 3;
-            root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 250F));
+            root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 260F));
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 58F));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 70F));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 54F));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 62F));
 
             Label title = MakeLabel("API Key 管理", 16F, FontStyle.Bold, palette.Text);
             Label subtitle = MakeLabel("创建、导入并为当前模型配置选择鉴权密钥", 9F, FontStyle.Regular, palette.Muted);
@@ -69,65 +74,80 @@ namespace LlamaServerManager
             root.Controls.Add(heading, 0, 0);
             root.SetColumnSpan(heading, 2);
 
-            TableLayoutPanel left = MakeSurfacePanel();
-            left.Margin = new Padding(0, 0, 10, 0);
-            left.RowCount = 2;
+            DialogCardPanel left = MakeSurfacePanel();
+            left.Margin = new Padding(0, 0, 8, 0);
+            left.RowCount = 3;
+            left.RowStyles.Add(new RowStyle(SizeType.Absolute, 40F));
             left.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-            left.RowStyles.Add(new RowStyle(SizeType.Absolute, 46F));
+            left.RowStyles.Add(new RowStyle(SizeType.Absolute, 52F));
+            Label libraryTitle = MakeLabel("密钥库", 10F, FontStyle.Bold, palette.Text);
+            libraryTitle.Dock = DockStyle.Fill;
+            libraryTitle.TextAlign = ContentAlignment.MiddleLeft;
+            left.Controls.Add(libraryTitle, 0, 0);
             lstKeys = new ListBox();
             lstKeys.Dock = DockStyle.Fill;
             lstKeys.BorderStyle = BorderStyle.None;
             lstKeys.IntegralHeight = false;
-            lstKeys.BackColor = palette.Surface;
+            lstKeys.BackColor = palette.SurfaceAlt;
             lstKeys.ForeColor = palette.Text;
             lstKeys.Font = new Font("Microsoft YaHei UI", 9F);
+            lstKeys.DrawMode = DrawMode.OwnerDrawFixed;
+            lstKeys.ItemHeight = 42;
+            lstKeys.DrawItem += DrawKeyItem;
             lstKeys.SelectedIndexChanged += KeySelectionChanged;
-            left.Controls.Add(lstKeys, 0, 0);
+            left.Controls.Add(lstKeys, 0, 1);
             FlowLayoutPanel leftActions = new FlowLayoutPanel();
             leftActions.Dock = DockStyle.Fill;
             leftActions.FlowDirection = FlowDirection.LeftToRight;
             leftActions.WrapContents = false;
+            leftActions.BackColor = Color.Transparent;
             leftActions.Controls.Add(MakeButton("新建", 60, false, NewClicked));
             leftActions.Controls.Add(MakeButton("导入", 60, false, ImportClicked));
             leftActions.Controls.Add(MakeButton("删除", 60, false, DeleteClicked));
-            left.Controls.Add(leftActions, 0, 1);
+            left.Controls.Add(leftActions, 0, 2);
             root.Controls.Add(left, 0, 1);
 
-            TableLayoutPanel editor = MakeSurfacePanel();
-            editor.Margin = new Padding(10, 0, 0, 0);
+            DialogCardPanel editor = MakeSurfacePanel();
+            editor.Margin = new Padding(8, 0, 0, 0);
             editor.Padding = new Padding(16);
-            editor.RowCount = 7;
+            editor.RowCount = 8;
+            editor.RowStyles.Add(new RowStyle(SizeType.Absolute, 40F));
             editor.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));
-            editor.RowStyles.Add(new RowStyle(SizeType.Absolute, 42F));
+            editor.RowStyles.Add(new RowStyle(SizeType.Absolute, 46F));
             editor.RowStyles.Add(new RowStyle(SizeType.Absolute, 30F));
             editor.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-            editor.RowStyles.Add(new RowStyle(SizeType.Absolute, 46F));
+            editor.RowStyles.Add(new RowStyle(SizeType.Absolute, 52F));
             editor.RowStyles.Add(new RowStyle(SizeType.Absolute, 34F));
             editor.RowStyles.Add(new RowStyle(SizeType.Absolute, 52F));
-            editor.Controls.Add(MakeLabel("名称", 9F, FontStyle.Bold, palette.Text), 0, 0);
+            Label editorTitle = MakeLabel("密钥详情", 10F, FontStyle.Bold, palette.Text);
+            editorTitle.Dock = DockStyle.Fill;
+            editorTitle.TextAlign = ContentAlignment.MiddleLeft;
+            editor.Controls.Add(editorTitle, 0, 0);
+            editor.Controls.Add(MakeLabel("名称", 9F, FontStyle.Bold, palette.Text), 0, 1);
             txtName = MakeTextBox(false);
             txtName.TextChanged += EditorTextChanged;
-            editor.Controls.Add(txtName, 0, 1);
-            editor.Controls.Add(MakeLabel("密钥内容 · 每行一个 Key", 9F, FontStyle.Bold, palette.Text), 0, 2);
+            editor.Controls.Add(txtName, 0, 2);
+            editor.Controls.Add(MakeLabel("密钥内容 · 每行一个 Key", 9F, FontStyle.Bold, palette.Text), 0, 3);
             txtKeys = MakeTextBox(true);
             txtKeys.Font = new Font("Cascadia Mono", 9F, FontStyle.Regular, GraphicsUnit.Point);
             txtKeys.TextChanged += EditorTextChanged;
-            editor.Controls.Add(txtKeys, 0, 3);
+            editor.Controls.Add(txtKeys, 0, 4);
             FlowLayoutPanel keyActions = new FlowLayoutPanel();
             keyActions.Dock = DockStyle.Fill;
             keyActions.WrapContents = false;
+            keyActions.BackColor = Color.Transparent;
             keyActions.Controls.Add(MakeButton("生成随机 Key", 118, false, GenerateClicked));
             btnReveal = MakeButton("显示", 76, false, RevealClicked);
             keyActions.Controls.Add(btnReveal);
             keyActions.Controls.Add(MakeButton("保存密钥", 94, true, SaveClicked));
-            editor.Controls.Add(keyActions, 0, 4);
+            editor.Controls.Add(keyActions, 0, 5);
             lblSummary = MakeLabel("选择一个托管密钥，或新建密钥文件。", 8.5F, FontStyle.Regular, palette.Muted);
             lblSummary.Dock = DockStyle.Fill;
             lblSummary.TextAlign = ContentAlignment.MiddleLeft;
-            editor.Controls.Add(lblSummary, 0, 5);
+            editor.Controls.Add(lblSummary, 0, 6);
             Label security = MakeLabel("为兼容 llama.cpp，密钥以本地文本文件保存，并继承所在目录权限。请勿共享 data/api-keys 目录或把密钥打包发布。", 8.25F, FontStyle.Regular, palette.Muted);
             security.Dock = DockStyle.Fill;
-            editor.Controls.Add(security, 0, 6);
+            editor.Controls.Add(security, 0, 7);
             root.Controls.Add(editor, 1, 1);
 
             FlowLayoutPanel bottom = new FlowLayoutPanel();
@@ -135,21 +155,22 @@ namespace LlamaServerManager
             bottom.FlowDirection = FlowDirection.RightToLeft;
             bottom.WrapContents = false;
             bottom.Padding = new Padding(0, 9, 0, 0);
-            Button useButton = MakeButton("用于当前配置", 128, true, UseClicked);
-            Button closeButton = MakeButton("关闭", 84, false, CloseClicked);
+            bottom.BackColor = palette.Background;
+            AButton useButton = MakeButton("用于当前配置", 128, true, UseClicked);
+            AButton closeButton = MakeButton("关闭", 84, false, CloseClicked);
             bottom.Controls.Add(useButton);
             bottom.Controls.Add(closeButton);
             bottom.Controls.Add(MakeButton("清除当前配置", 118, false, ClearClicked));
             root.Controls.Add(bottom, 0, 2);
             root.SetColumnSpan(bottom, 2);
 
-            Controls.Add(root);
+            InstallDialogChrome(root, "API Key 管理", palette);
             AcceptButton = null;
             CancelButton = closeButton;
             Shown += delegate
             {
-                ThemeService.ApplyNativeTitleBar(this, palette.IsDark);
                 RefreshRecords(initialPath);
+                lstKeys.Focus();
                 string readError;
                 if (!string.IsNullOrWhiteSpace(initialPath) && !ApiKeyFileSupport.TryOpenForRead(initialPath, out readError))
                 {
@@ -207,6 +228,24 @@ namespace LlamaServerManager
             catch (Exception ex) { ShowError(ex.Message); }
         }
 
+        private void DrawKeyItem(object sender, DrawItemEventArgs e)
+        {
+            if (e.Index < 0 || e.Index >= lstKeys.Items.Count) return;
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            bool selected = (e.State & DrawItemState.Selected) == DrawItemState.Selected;
+            Rectangle item = new Rectangle(e.Bounds.Left + 2, e.Bounds.Top + 3,
+                Math.Max(1, e.Bounds.Width - 5), Math.Max(1, e.Bounds.Height - 6));
+            Color back = selected ? ThemeService.Mix(palette.SurfaceAlt, palette.Accent, palette.IsDark ? 0.24F : 0.12F) : palette.SurfaceAlt;
+            using (GraphicsPath path = DialogVisuals.RoundRect(item, 9))
+            using (SolidBrush fill = new SolidBrush(back)) e.Graphics.FillPath(fill, path);
+            Color fore = selected ? palette.Accent : palette.Text;
+            TextRenderer.DrawText(e.Graphics, Convert.ToString(lstKeys.Items[e.Index]), lstKeys.Font,
+                new Rectangle(item.Left + 12, item.Top, Math.Max(1, item.Width - 24), item.Height), fore,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+            if ((e.State & DrawItemState.Focus) == DrawItemState.Focus)
+                ControlPaint.DrawFocusRectangle(e.Graphics, item, fore, back);
+        }
+
         private void NewClicked(object sender, EventArgs e)
         {
             loadingEditor = true;
@@ -250,7 +289,7 @@ namespace LlamaServerManager
                 ManagedApiKeyFile selected = SelectedRecord();
                 if (File.Exists(target) && (selected == null || !string.Equals(selected.FilePath, target, StringComparison.OrdinalIgnoreCase)))
                 {
-                    DialogResult overwrite = MessageBox.Show(this, "同名密钥文件已存在，是否覆盖？", "覆盖 API Key", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+                    DialogResult overwrite = LlamaLiftDialog.Show(this, "同名密钥文件已存在，是否覆盖？", "覆盖 API Key", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
                     if (overwrite != DialogResult.Yes) return null;
                 }
                 ManagedApiKeyFile saved = store.Save(txtName.Text, CurrentSecretContent());
@@ -282,7 +321,7 @@ namespace LlamaServerManager
         {
             ManagedApiKeyFile record = SelectedRecord();
             if (record == null) return;
-            if (MessageBox.Show(this, "确定删除托管密钥“" + record.Name + "”吗？\n该文件删除后无法恢复。", "删除 API Key",
+            if (LlamaLiftDialog.Show(this, "确定删除托管密钥“" + record.Name + "”吗？\n该文件删除后无法恢复。", "删除 API Key",
                 MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
             try
             {
@@ -331,7 +370,7 @@ namespace LlamaServerManager
         {
             lblSummary.Text = message;
             lblSummary.ForeColor = palette.Danger;
-            MessageBox.Show(this, message, "API Key 管理", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            LlamaLiftDialog.Show(this, message, "API Key 管理", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
 
         private void EditorTextChanged(object sender, EventArgs e)
@@ -374,42 +413,57 @@ namespace LlamaServerManager
             return string.Join(Environment.NewLine, masked.ToArray());
         }
 
-        private TableLayoutPanel MakeSurfacePanel()
+        private DialogCardPanel MakeSurfacePanel()
         {
-            TableLayoutPanel panel = new TableLayoutPanel();
+            DialogCardPanel panel = new DialogCardPanel(palette);
             panel.Dock = DockStyle.Fill;
             panel.Padding = new Padding(12);
             panel.ColumnCount = 1;
             panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            panel.BackColor = palette.Surface;
             return panel;
         }
 
-        private TextBox MakeTextBox(bool multiline)
+        private AInput MakeTextBox(bool multiline)
         {
-            TextBox input = new TextBox();
+            AInput input = new AInput();
             input.Dock = DockStyle.Fill;
             input.Multiline = multiline;
-            input.BorderStyle = BorderStyle.FixedSingle;
             input.BackColor = palette.SurfaceAlt;
             input.ForeColor = palette.Text;
-            input.Margin = new Padding(0, 3, 0, 6);
+            input.BorderColor = palette.Border;
+            input.BorderHover = ThemeService.Mix(palette.Border, palette.Accent, 0.45F);
+            input.BorderActive = palette.Accent;
+            input.PlaceholderColor = palette.Muted;
+            input.CaretColor = palette.Accent;
+            input.SelectionColor = ThemeService.Mix(palette.SurfaceAlt, palette.Accent, 0.28F);
+            input.Radius = 10;
+            input.AutoScroll = multiline;
+            input.Margin = new Padding(0, 4, 0, 6);
             return input;
         }
 
-        private Button MakeButton(string text, int width, bool primary, EventHandler handler)
+        private AButton MakeButton(string text, int width, bool primary, EventHandler handler)
         {
-            Button button = new Button();
+            AButton button = new AButton();
             button.Text = text;
             button.Width = width;
-            button.Height = 34;
-            button.FlatStyle = FlatStyle.Flat;
-            button.FlatAppearance.BorderSize = primary ? 0 : 1;
-            button.FlatAppearance.BorderColor = palette.Border;
-            button.BackColor = primary ? palette.Accent : palette.SurfaceAlt;
-            button.ForeColor = primary ? Color.White : palette.Text;
-            button.Margin = new Padding(4, 5, 4, 5);
+            button.Height = 38;
+            button.Radius = 10;
+            button.BorderWidth = 1F;
+            button.Type = primary ? AntdUI.TTypeMini.Primary : AntdUI.TTypeMini.Default;
+            button.Margin = new Padding(4, 6, 4, 5);
             button.Cursor = Cursors.Hand;
+            if (!primary)
+            {
+                Color buttonFore = text == "删除" || text == "清除当前配置" ? palette.Danger : palette.Text;
+                button.DefaultBack = palette.SurfaceAlt;
+                button.DefaultBorderColor = palette.Border;
+                button.ForeColor = buttonFore;
+                button.ForeHover = buttonFore;
+                button.ForeActive = buttonFore;
+                button.BackHover = ThemeService.Mix(palette.SurfaceAlt, buttonFore, 0.08F);
+                button.BackActive = ThemeService.Mix(palette.SurfaceAlt, buttonFore, 0.15F);
+            }
             button.Click += handler;
             return button;
         }

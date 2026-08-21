@@ -63,6 +63,7 @@ namespace LlamaServerManager
             CheckCommandPreflight();
             CheckApiKeyStore();
             CheckApiKeyLaunchCompatibility();
+            CheckChatTemplatesAndConnectionInfo();
             CheckLlamaServerLocator();
             CheckParameterPresets();
             CheckNormalizationDefaults();
@@ -323,6 +324,66 @@ namespace LlamaServerManager
                     "API Key validation performs a real read-open check");
                 ApiKeyFileSupport.ReleaseRuntimeCopy(launchPath);
                 Check(!File.Exists(launchPath), "temporary API Key bridge is removed after the server session");
+            }
+            finally
+            {
+                try { if (Directory.Exists(root)) Directory.Delete(root, true); } catch { }
+            }
+        }
+
+        private static void CheckChatTemplatesAndConnectionInfo()
+        {
+            string root = Path.Combine(Path.GetTempPath(), "llamalift-connection-info-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            try
+            {
+                string keyPath = Path.Combine(root, "keys.txt");
+                string templatePath = Path.Combine(root, "custom-template.jinja");
+                File.WriteAllText(keyPath, "\r\nsk-first-connection-key\r\nsk-second-connection-key\r\n", new UTF8Encoding(false));
+                File.WriteAllText(templatePath, "{% for message in messages %}{{ message.content }}{% endfor %}", new UTF8Encoding(false));
+
+                ModelProfile named = ModelProfile.CreateGenericProfile();
+                named.Alias = "Ornith 1.5";
+                named.ModelPath = @"D:\Models\Ornith-1.5-35B-A3B-IQ3_XXS.gguf";
+                named.ApiKeyFile = keyPath;
+                named.ApiProtocol = ApiProtocolMode.ChatCompletions;
+                named.AdvertisedHost = "model-host.local";
+                named.Port = 9180;
+                named.ContextSize = 65536;
+                named.ChatTemplate = "chatml";
+
+                string builtInArguments = CommandBuilder.BuildArguments(named);
+                Check(builtInArguments.Contains("--chat-template \"chatml\"") &&
+                    builtInArguments.IndexOf("--jinja", StringComparison.Ordinal) < builtInArguments.IndexOf("--chat-template", StringComparison.Ordinal),
+                    "chat template names emit Jinja before --chat-template");
+                CommandParseResult builtInParsed = CommandParser.Parse("llama-server.exe " + builtInArguments, named);
+                Check(builtInParsed.Success && builtInParsed.Profile.ChatTemplate == "chatml" &&
+                    string.IsNullOrWhiteSpace(builtInParsed.Profile.ChatTemplateFile),
+                    "chat template names round-trip through the command parser");
+
+                named.ChatTemplate = string.Empty;
+                named.ChatTemplateFile = templatePath;
+                string fileArguments = CommandBuilder.BuildArguments(named);
+                Check(fileArguments.Contains("--chat-template-file \"" + templatePath + "\""),
+                    "chat template files emit the official --chat-template-file argument");
+                CommandParseResult fileParsed = CommandParser.Parse("llama-server.exe " + fileArguments, named);
+                Check(fileParsed.Success && fileParsed.Profile.ChatTemplateFile == templatePath &&
+                    string.IsNullOrWhiteSpace(fileParsed.Profile.ChatTemplate),
+                    "chat template files round-trip without becoming unknown arguments");
+                ModelProfile missingTemplate = named.Clone();
+                missingTemplate.ChatTemplateFile = Path.Combine(root, "missing-template.jinja");
+                Check(string.Join("\n", CommandBuilder.ValidateForStart(missingTemplate).ToArray()).Contains("聊天模板文件"),
+                    "missing chat template files block service startup with a clear error");
+
+                ConnectionInfoSnapshot info = ConnectionInfoSnapshot.Create(named);
+                Check(info.ProviderId == "llamalift-ornith-1-5" && info.ApiProtocol == "Chat Completions",
+                    "connection popup derives a stable provider ID and protocol label");
+                Check(info.ApiAddress == "http://model-host.local:9180/v1" && info.ModelFullName == "Ornith-1.5-35B-A3B-IQ3_XXS.gguf",
+                    "connection popup exposes the client base URL and complete model file name");
+                Check(info.HasApiKey && info.ApiKey == "sk-first-connection-key",
+                    "connection popup reads only the first usable API Key for copy and reveal");
+                Check(info.MaximumContext.Contains("65,536") && info.MaximumContext.Contains("上限未知"),
+                    "connection popup falls back clearly when GGUF maximum context is unavailable");
             }
             finally
             {

@@ -225,6 +225,14 @@ namespace LlamaServerManager
                 case "--mmproj": profile.MmprojPath = value; break;
                 case "--alias": profile.Alias = value; break;
                 case "--api-key-file": profile.ApiKeyFile = value; break;
+                case "--chat-template":
+                    profile.ChatTemplate = value;
+                    profile.ChatTemplateFile = string.Empty;
+                    break;
+                case "--chat-template-file":
+                    profile.ChatTemplateFile = value;
+                    profile.ChatTemplate = string.Empty;
+                    break;
                 case "--n-gpu-layers": profile.GpuLayers = value; break;
                 case "--cache-type-k": profile.CacheTypeK = value; break;
                 case "--cache-type-v": profile.CacheTypeV = value; break;
@@ -322,6 +330,8 @@ namespace LlamaServerManager
                 case "--mmproj": return "--mmproj";
                 case "--alias": return "--alias";
                 case "--api-key-file": return "--api-key-file";
+                case "--chat-template": return "--chat-template";
+                case "--chat-template-file": return "--chat-template-file";
                 case "-ngl": case "--gpu-layers": case "--n-gpu-layers": return "--n-gpu-layers";
                 case "--fit": return "--fit";
                 case "--fit-target": return "--fit-target";

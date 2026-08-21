@@ -22,6 +22,7 @@ $arguments = @(
     "/reference:System.IO.Compression.FileSystem.dll",
     (Join-Path $projectDir "Models.cs"),
     (Join-Path $projectDir "ApiProtocols.cs"),
+    (Join-Path $projectDir "ConnectionInfo.cs"),
     (Join-Path $projectDir "Services.cs"),
     (Join-Path $projectDir "CommandEditing.cs"),
     (Join-Path $projectDir "CommandValidation.cs"),
@@ -36,3 +37,5 @@ if ($LASTEXITCODE -ne 0) { throw "Test compilation failed: $LASTEXITCODE" }
 
 & (Join-Path $testDir "SmokeTests.exe")
 if ($LASTEXITCODE -ne 0) { throw "Offline tests failed: $LASTEXITCODE" }
+
+& (Join-Path $projectDir "installer\verify-upgrade-contract.ps1")
